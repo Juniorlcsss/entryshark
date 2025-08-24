@@ -1,0 +1,8 @@
+pyshark
+maturin
+tkinterdnd2
+requests
+pillow
+pytest
+scapy
+python-dotenv
