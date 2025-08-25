@@ -1144,18 +1144,46 @@ class EnhancedPcapAnalyzer:
     def _analyze_network_ranges(self, target_ips):
         """Analyze target IPs to identify network ranges being scanned"""
         ranges = {}
+        individual_ips = set()
         
         for ip in target_ips:
+            individual_ips.add(ip)
             parts = ip.split('.')
             if len(parts) == 4:
-                # Group by /24 network
-                network = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
-                if network not in ranges:
-                    ranges[network] = 0
-                ranges[network] += 1
+                try:
+                    # Group by /24 network (Class C)
+                    network_24 = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+                    if network_24 not in ranges:
+                        ranges[network_24] = set()
+                    ranges[network_24].add(ip)
+                    
+                    # Also track /16 networks for broader patterns
+                    network_16 = f"{parts[0]}.{parts[1]}.0.0/16"
+                    if network_16 not in ranges:
+                        ranges[network_16] = set()
+                    ranges[network_16].add(ip)
+                except (ValueError, IndexError):
+                    continue
         
-        # Return networks with 3+ IPs
-        return [network for network, count in ranges.items() if count >= 3]
+        # Determine which ranges to report
+        reported_ranges = []
+        
+        # Report /24 networks with 2+ IPs (lowered threshold)
+        for network, ips in ranges.items():
+            if network.endswith('/24') and len(ips) >= 2:
+                reported_ranges.append(f"{network} ({len(ips)} hosts)")
+        
+        # If no /24 ranges found but many individual IPs, report /16 ranges
+        if not reported_ranges and len(individual_ips) > 5:
+            for network, ips in ranges.items():
+                if network.endswith('/16') and len(ips) >= 5:
+                    reported_ranges.append(f"{network} ({len(ips)} hosts)")
+        
+        # If still no ranges, report the individual count
+        if not reported_ranges and len(individual_ips) > 1:
+            reported_ranges.append(f"Multiple IPs ({len(individual_ips)} total)")
+        
+        return reported_ranges[:5]  # Limit to top 5 ranges
     
     def _analyze_with_topology_context(self, packets_data):
         """Analyze packets with network topology context"""
@@ -1634,7 +1662,24 @@ class EnhancedPcapAnalyzer:
             if finding.get('evidence'):
                 evidence = finding['evidence']
                 f.write(f"      Scanner: {evidence.get('scanner_ip', 'Unknown')}\n")
-                f.write(f"      Network Range: {evidence.get('target_range', 'Unknown')}\n")
+                
+                # Handle network ranges properly
+                network_ranges = evidence.get('network_ranges', [])
+                if network_ranges:
+                    if len(network_ranges) == 1:
+                        f.write(f"      Network Range: {network_ranges[0]}\n")
+                    else:
+                        f.write(f"      Network Ranges: {', '.join(network_ranges[:3])}")
+                        if len(network_ranges) > 3:
+                            f.write(f" + {len(network_ranges) - 3} more")
+                        f.write("\n")
+                else:
+                    # Fallback: try to determine range from evidence
+                    hosts_contacted = evidence.get('hosts_contacted', 0)
+                    if hosts_contacted > 0:
+                        f.write(f"      Network Range: Multiple subnets ({hosts_contacted} hosts)\n")
+                    else:
+                        f.write(f"      Network Range: Unknown\n")
         
         elif finding_type == 'lateral_movement_admin':
             f.write(f"   ↔️  Lateral Movement: Administrative service access\n")
