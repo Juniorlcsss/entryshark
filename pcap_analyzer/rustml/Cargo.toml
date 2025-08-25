@@ -8,7 +8,7 @@ name = "rustml"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.21.2", features = ["extension-module"] }
+pyo3 = { version = "0.25", features = ["extension-module"] }
 
 [package.metadata.maturin]
 name = "rustml"
