@@ -311,7 +311,9 @@ class EntrySharkApp:
                     all_results = results
                     
                 except Exception as e:
-                    self.result_queue.put(("error", f"Enhanced analysis failed: {str(e)}. Falling back to standard analysis."))
+                    import traceback
+                    error_details = traceback.format_exc()
+                    self.result_queue.put(("error", f"Enhanced analysis failed: {str(e)}. Falling back to standard analysis.\n\nDebug details: {error_details}"))
                     use_enhanced_analysis = False
             
             if not use_enhanced_analysis:

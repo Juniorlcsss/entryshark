@@ -1,9 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 #[pyclass]
 pub struct PacketFeatures {
     #[pyo3(get, set)]
@@ -50,7 +49,7 @@ impl PacketFeatures {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 #[pyclass]
 pub struct SuspiciousActivity {
     #[pyo3(get, set)]
@@ -313,29 +312,95 @@ fn is_suspicious_ip(ip: &str) -> bool {
     ip == "0.0.0.0" || ip == "255.255.255.255"
 }
 
-/// Detect potential port scanning behavior
+/// Detect potential port scanning behavior with detailed source information
 #[pyfunction]
-fn detect_port_scan(packets_data: &PyList, threshold: u16) -> PyResult<Vec<String>> {
-    let mut ip_port_count: HashMap<String, std::collections::HashSet<u16>> = HashMap::new();
-    let mut scanners = Vec::new();
+fn detect_port_scan(packets_data: &PyList, threshold: u16) -> PyResult<Vec<PyObject>> {
+    let py = packets_data.py();
+    let mut ip_port_targets: HashMap<String, (std::collections::HashSet<u16>, std::collections::HashSet<String>)> = HashMap::new();
+    let mut results = Vec::new();
 
     for item in packets_data {
         let dict = item.downcast::<PyDict>()?;
         let src_ip = dict.get_item("src_ip")?.unwrap().extract::<String>()?;
+        let dst_ip = dict.get_item("dst_ip")?.unwrap().extract::<String>()?;
         let dst_port = dict.get_item("dst_port")?.unwrap().extract::<u16>()?;
 
-        ip_port_count.entry(src_ip.clone())
-            .or_insert_with(std::collections::HashSet::new)
-            .insert(dst_port);
+        let entry = ip_port_targets.entry(src_ip.clone()).or_insert_with(|| {
+            (std::collections::HashSet::new(), std::collections::HashSet::new())
+        });
+        entry.0.insert(dst_port);
+        entry.1.insert(dst_ip);
     }
 
-    for (ip, ports) in ip_port_count {
+    for (src_ip, (ports, targets)) in ip_port_targets {
         if ports.len() >= threshold as usize {
-            scanners.push(format!("{} (scanned {} ports)", ip, ports.len()));
+            let result_dict = PyDict::new(py);
+            result_dict.set_item("source", src_ip.clone())?;
+            result_dict.set_item("ports_scanned", ports.len())?;
+            result_dict.set_item("targets_count", targets.len())?;
+            result_dict.set_item("ports_list", ports.iter().cloned().collect::<Vec<u16>>())?;
+            result_dict.set_item("targets_list", targets.iter().cloned().collect::<Vec<String>>())?;
+            result_dict.set_item("scan_intensity", ports.len() as f64 / targets.len() as f64)?;
+            
+            results.push(result_dict.into());
         }
     }
 
-    Ok(scanners)
+    Ok(results)
+}
+
+/// Detect network reconnaissance/sweeps with detailed source information
+#[pyfunction]
+fn detect_network_sweep(packets_data: &PyList, min_targets: u16) -> PyResult<Vec<PyObject>> {
+    let py = packets_data.py();
+    let mut ip_targets: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    let mut results = Vec::new();
+
+    for item in packets_data {
+        let dict = item.downcast::<PyDict>()?;
+        let src_ip = dict.get_item("src_ip")?.unwrap().extract::<String>()?;
+        let dst_ip = dict.get_item("dst_ip")?.unwrap().extract::<String>()?;
+
+        ip_targets.entry(src_ip.clone())
+            .or_insert_with(std::collections::HashSet::new)
+            .insert(dst_ip);
+    }
+
+    for (src_ip, targets) in ip_targets {
+        if targets.len() >= min_targets as usize {
+            let result_dict = PyDict::new(py);
+            result_dict.set_item("scanner", src_ip.clone())?;
+            result_dict.set_item("targets_count", targets.len())?;
+            result_dict.set_item("targets_list", targets.iter().cloned().collect::<Vec<String>>())?;
+            
+            // Determine network range being scanned
+            let network_ranges = analyze_network_ranges(&targets);
+            result_dict.set_item("network_ranges", network_ranges)?;
+            
+            results.push(result_dict.into());
+        }
+    }
+
+    Ok(results)
+}
+
+/// Analyze network ranges from target IPs
+fn analyze_network_ranges(targets: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut ranges = std::collections::HashMap::new();
+    
+    for target in targets {
+        let parts: Vec<&str> = target.split('.').collect();
+        if parts.len() == 4 {
+            // Group by /24 network
+            let network = format!("{}.{}.{}.0/24", parts[0], parts[1], parts[2]);
+            *ranges.entry(network).or_insert(0) += 1;
+        }
+    }
+    
+    ranges.into_iter()
+        .filter(|(_, count)| *count >= 3) // At least 3 IPs in same network
+        .map(|(network, _)| network)
+        .collect()
 }
 
 #[pymodule]
@@ -343,6 +408,7 @@ fn rustml(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_suspicious_port, m)?)?;
     m.add_function(wrap_pyfunction!(is_suspicious_ip, m)?)?;
     m.add_function(wrap_pyfunction!(detect_port_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_network_sweep, m)?)?;
     m.add_function(wrap_pyfunction!(detect_network_anomalies, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_packet_flows, m)?)?;
     m.add_class::<PacketFeatures>()?;

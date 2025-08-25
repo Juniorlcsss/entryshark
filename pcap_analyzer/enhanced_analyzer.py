@@ -670,21 +670,25 @@ class EnhancedPcapAnalyzer:
         return findings
     
     def _detect_brute_force_attempts(self, packets_data):
-        """Detect brute force login attempts"""
+        """Detect brute force login attempts with enhanced source IP tracking"""
         findings = []
         
         # Common authentication ports
         auth_ports = {22: 'SSH', 23: 'Telnet', 21: 'FTP', 3389: 'RDP', 
-                      139: 'SMB', 445: 'SMB', 993: 'IMAPS', 995: 'POP3S'}
+                      139: 'SMB', 445: 'SMB', 993: 'IMAPS', 995: 'POP3S', 
+                      80: 'HTTP', 443: 'HTTPS', 25: 'SMTP', 110: 'POP3', 143: 'IMAP'}
         
-        # Group connections by source IP and destination port
+        # Group connections by source IP and destination port for brute force detection
         auth_attempts = {}
+        port_attack_summary = {}
         
         for packet in packets_data:
             dst_port = packet['dst_port']
-            if dst_port in auth_ports:
-                src_ip = packet['src_ip']
-                dst_ip = packet['dst_ip']
+            src_ip = packet['src_ip']
+            dst_ip = packet['dst_ip']
+            
+            # Check both known auth ports and high-frequency connections to any port
+            if dst_port in auth_ports or dst_port in [80, 443, 8080, 8443]:
                 key = f"{src_ip}->{dst_ip}:{dst_port}"
                 
                 if key not in auth_attempts:
@@ -692,35 +696,77 @@ class EnhancedPcapAnalyzer:
                         'src_ip': src_ip,
                         'dst_ip': dst_ip,
                         'port': dst_port,
-                        'service': auth_ports[dst_port],
+                        'service': auth_ports.get(dst_port, f'Port {dst_port}'),
                         'attempts': 0
                     }
                 
                 auth_attempts[key]['attempts'] += 1
+                
+                # Track per-port summaries
+                if dst_port not in port_attack_summary:
+                    port_attack_summary[dst_port] = {
+                        'total_attempts': 0,
+                        'source_ips': set(),
+                        'target_ips': set(),
+                        'service': auth_ports.get(dst_port, f'Port {dst_port}')
+                    }
+                
+                port_attack_summary[dst_port]['total_attempts'] += 1
+                port_attack_summary[dst_port]['source_ips'].add(src_ip)
+                port_attack_summary[dst_port]['target_ips'].add(dst_ip)
         
-        # Analyze for brute force patterns
+        # Analyze for brute force patterns - individual source attacks
         for attempt_key, attempt in auth_attempts.items():
             if attempt['attempts'] > 20:  # Many attempts to same service
                 severity = 'high' if attempt['attempts'] > 100 else 'medium'
                 findings.append({
-                    'type': 'brute_force_attempt',
+                    'type': 'brute_force_attempts',
                     'severity': severity,
                     'count': attempt['attempts'],
-                    'description': f"Potential brute force against {attempt['service']} service",
+                    'description': f"Brute force attack from {attempt['src_ip']} against {attempt['service']} on {attempt['dst_ip']}",
                     'evidence': {
                         'src_ip': attempt['src_ip'],
                         'dst_ip': attempt['dst_ip'],
                         'service': attempt['service'],
-                        'port': attempt['port'],
-                        'attempt_count': attempt['attempts']
+                        'target_port': attempt['port'],
+                        'attempt_count': attempt['attempts'],
+                        'source_count': 1,
+                        'failed_attempts': attempt['attempts']  # Assume all are failed attempts
                     },
-                    'data': []
+                    'data': attempt
+                })
+        
+        # Analyze for coordinated attacks on specific ports
+        for port, summary in port_attack_summary.items():
+            if summary['total_attempts'] > 50 and len(summary['source_ips']) > 1:
+                severity = 'high' if summary['total_attempts'] > 500 else 'medium'
+                findings.append({
+                    'type': 'brute_force_attempts',
+                    'severity': severity,
+                    'count': summary['total_attempts'],
+                    'description': f"Coordinated brute force attack against {summary['service']} from {len(summary['source_ips'])} sources",
+                    'evidence': {
+                        'target_port': port,
+                        'service': summary['service'],
+                        'source_count': len(summary['source_ips']),
+                        'target_count': len(summary['target_ips']),
+                        'failed_attempts': summary['total_attempts'],
+                        'attempt_count': summary['total_attempts'],
+                        'source_ips': list(summary['source_ips'])[:10],  # Top 10 sources
+                        'target_ips': list(summary['target_ips'])[:5]    # Top 5 targets
+                    },
+                    'data': {
+                        'port': port,
+                        'total_attempts': summary['total_attempts'],
+                        'unique_sources': len(summary['source_ips']),
+                        'unique_targets': len(summary['target_ips'])
+                    }
                 })
         
         return findings
     
     def _detect_network_reconnaissance(self, packets_data):
-        """Detect network reconnaissance activities"""
+        """Detect network reconnaissance activities with enhanced source tracking"""
         findings = []
         
         # Track IP scanning patterns
@@ -746,35 +792,54 @@ class EnhancedPcapAnalyzer:
             dest_count = len(pattern['unique_destinations'])
             port_count = len(pattern['unique_ports'])
             
-            # Network sweep detection
-            if dest_count > 50:
+            # Network sweep detection (scanning many hosts)
+            if dest_count > 10:  # Lowered threshold for better detection
+                severity = 'high' if dest_count > 50 else 'medium'
+                
+                # Analyze network ranges being scanned
+                network_ranges = self._analyze_network_ranges(pattern['unique_destinations'])
+                
                 findings.append({
-                    'type': 'network_sweep',
-                    'severity': 'high',
+                    'type': 'network_reconnaissance',
+                    'severity': severity,
                     'count': dest_count,
-                    'description': f"Network sweep detected: {src_ip} contacted {dest_count} unique hosts",
+                    'description': f"Network reconnaissance from {src_ip}: {dest_count} hosts scanned",
                     'evidence': {
-                        'src_ip': src_ip,
+                        'scanner_ip': src_ip,        # Use consistent field name
+                        'src_ip': src_ip,            # Also include for backward compatibility
                         'hosts_contacted': dest_count,
-                        'sample_destinations': list(pattern['unique_destinations'])[:20]
+                        'ports_involved': port_count,
+                        'network_ranges': network_ranges,
+                        'sample_destinations': sorted(list(pattern['unique_destinations']))[:20],
+                        'sample_ports': sorted(list(pattern['unique_ports']))[:20]
                     },
-                    'data': []
+                    'data': {
+                        'scanner': src_ip,
+                        'targets_count': dest_count,
+                        'network_ranges': network_ranges
+                    }
                 })
             
-            # Service enumeration
+            # Service enumeration (scanning many ports on few hosts)
             if port_count > 30 and dest_count < 10:
                 findings.append({
                     'type': 'service_enumeration',
                     'severity': 'medium',
                     'count': port_count,
-                    'description': f"Service enumeration: {src_ip} scanned {port_count} ports on few hosts",
+                    'description': f"Service enumeration from {src_ip}: {port_count} ports scanned on {dest_count} hosts",
                     'evidence': {
+                        'scanner_ip': src_ip,
                         'src_ip': src_ip,
                         'ports_scanned': port_count,
                         'hosts_targeted': dest_count,
-                        'sample_ports': list(pattern['unique_ports'])[:20]
+                        'target_hosts': sorted(list(pattern['unique_destinations'])),
+                        'sample_ports': sorted(list(pattern['unique_ports']))[:20]
                     },
-                    'data': []
+                    'data': {
+                        'scanner': src_ip,
+                        'ports_count': port_count,
+                        'hosts_count': dest_count
+                    }
                 })
         
         return findings
@@ -858,31 +923,114 @@ class EnhancedPcapAnalyzer:
         return findings
     
     def _run_rustml_analysis(self, packets_data):
-        """Run RustML analysis with error handling"""
+        """Run RustML analysis with error handling and enhanced source IP detection"""
         findings = []
         
         try:
-            # Port scan detection with threshold
-            port_scans = detect_port_scan(packets_data, 20)  # Threshold of 20 ports
+            # Enhanced port scan detection with source IP details
+            if RUSTML_AVAILABLE:
+                try:
+                    # Try the new enhanced RustML functions first
+                    port_scan_results = detect_port_scan(packets_data, threshold=20)
+                    if port_scan_results:
+                        # Handle structured data from enhanced RustML
+                        for scan_data in port_scan_results[:10]:
+                            if isinstance(scan_data, dict):
+                                source_ip = scan_data.get('source', 'Unknown')
+                                ports_scanned = scan_data.get('ports_scanned', 0)
+                                targets_count = scan_data.get('targets_count', 0)
+                                scan_intensity = scan_data.get('scan_intensity', 0.0)
+                                
+                                findings.append({
+                                    'type': 'rustml_port_scanning',
+                                    'severity': 'high',
+                                    'count': 1,
+                                    'description': f"Port scan from {source_ip}: {ports_scanned} ports scanned across {targets_count} targets",
+                                    'evidence': {
+                                        'source_ip': source_ip,
+                                        'ports_scanned': ports_scanned,
+                                        'targets_count': targets_count,
+                                        'scan_intensity': round(scan_intensity, 2),
+                                        'ports_list': (scan_data.get('ports_list') or [])[:20],
+                                        'targets_list': (scan_data.get('targets_list') or [])[:10]
+                                    },
+                                    'data': scan_data
+                                })
+                    
+                    # Try network sweep detection
+                    try:
+                        from rustml import detect_network_sweep
+                        sweep_results = detect_network_sweep(packets_data, min_targets=5)
+                        if sweep_results:
+                            for sweep_data in sweep_results[:5]:
+                                if isinstance(sweep_data, dict):
+                                    scanner_ip = sweep_data.get('scanner', 'Unknown')
+                                    targets_count = sweep_data.get('targets_count', 0)
+                                    
+                                    findings.append({
+                                        'type': 'rustml_network_sweep',
+                                        'severity': 'high',
+                                        'count': 1,
+                                        'description': f"Network reconnaissance from {scanner_ip}: {targets_count} targets scanned",
+                                        'evidence': {
+                                            'scanner_ip': scanner_ip,
+                                            'targets_count': targets_count,
+                                            'network_ranges': sweep_data.get('network_ranges', []),
+                                            'targets_sample': (sweep_data.get('targets_list') or [])[:10]
+                                        },
+                                        'data': sweep_data
+                                    })
+                    except ImportError:
+                        pass  # Function not available
+                    
+                except Exception as rustml_error:
+                    # Fallback to basic RustML analysis
+                    basic_findings = self._run_basic_rustml_analysis(packets_data)
+                    findings.extend(basic_findings)
+                    
+            else:
+                # RustML not available, use Python-based enhanced detection
+                enhanced_findings = self._run_enhanced_python_analysis(packets_data)
+                findings.extend(enhanced_findings)
+                
+        except Exception as e:
+            findings.append({
+                'type': 'rustml_error',
+                'severity': 'low',
+                'count': 1,
+                'description': f"RustML analysis failed: {str(e)}",
+                'evidence': {},
+                'data': {'error': str(e)}
+            })
+            
+        return findings
+    
+    def _run_basic_rustml_analysis(self, packets_data):
+        """Fallback basic RustML analysis"""
+        findings = []
+        
+        try:
+            # Basic port scan detection
+            port_scans = detect_port_scan(packets_data, 20)
             if port_scans:
                 findings.append({
                     'type': 'rustml_port_scanning',
                     'severity': 'high',
                     'count': len(port_scans),
-                    'description': f"RustML detected {len(port_scans)} IP addresses performing port scanning",
+                    'description': f"RustML detected {len(port_scans)} port scanning activities",
                     'evidence': {
-                        'scanning_ips': port_scans[:10],
+                        'scanning_activities': len(port_scans),
                         'threshold_used': 20
                     },
-                    'data': port_scans[:10]
+                    'data': port_scans[:10] if port_scans and isinstance(port_scans[0], dict) else ["Port scan detected"] * min(len(port_scans), 10)
                 })
-            
+
             # Suspicious port detection
             suspicious_conns = []
             for packet in packets_data:
                 if is_suspicious_port(packet['dst_port']):
                     suspicious_conns.append(packet)
-            
+
             if suspicious_conns:
                 findings.append({
                     'type': 'rustml_suspicious_ports',
@@ -895,39 +1043,119 @@ class EnhancedPcapAnalyzer:
                     },
                     'data': suspicious_conns[:10]
                 })
-            
-            # RustML port scan detection
-            try:
-                port_scan_results = detect_port_scan(packets_data, threshold=20)
-                if port_scan_results:
-                    findings.append({
-                        'type': 'rustml_port_scan',
-                        'severity': 'high',
-                        'count': len(port_scan_results),
-                        'description': f"RustML detected {len(port_scan_results)} port scan activities",
-                        'evidence': {
-                            'port_scan_count': len(port_scan_results)
-                        },
-                        'data': port_scan_results[:10]
-                    })
-            except NameError:
-                # Function doesn't exist, skip
-                pass
                 
         except Exception as e:
             findings.append({
-                'type': 'rustml_error',
+                'type': 'rustml_basic_error',
                 'severity': 'low',
                 'count': 1,
-                'description': f"RustML analysis encountered an error: {str(e)}",
-                'evidence': {
-                    'error_type': type(e).__name__,
-                    'error_message': str(e)
-                },
-                'data': []
+                'description': f"Basic RustML analysis failed: {str(e)}",
+                'evidence': {},
+                'data': {'error': str(e)}
             })
-        
+            
         return findings
+    
+    def _run_enhanced_python_analysis(self, packets_data):
+        """Enhanced Python-based analysis when RustML is not available"""
+        findings = []
+        
+        try:
+            # Enhanced port scan detection with source IP tracking
+            ip_port_map = {}
+            ip_target_map = {}
+            
+            for packet in packets_data:
+                src_ip = packet['src_ip']
+                dst_ip = packet['dst_ip']
+                dst_port = packet['dst_port']
+                
+                # Track ports per source IP
+                if src_ip not in ip_port_map:
+                    ip_port_map[src_ip] = set()
+                    ip_target_map[src_ip] = set()
+                
+                ip_port_map[src_ip].add(dst_port)
+                ip_target_map[src_ip].add(dst_ip)
+            
+            # Detect port scanning (20+ ports per IP)
+            for src_ip, ports in ip_port_map.items():
+                if len(ports) >= 20:
+                    targets = ip_target_map[src_ip]
+                    scan_intensity = len(ports) / len(targets) if targets else len(ports)
+                    
+                    findings.append({
+                        'type': 'enhanced_port_scanning',
+                        'severity': 'high',
+                        'count': 1,
+                        'description': f"Port scan from {src_ip}: {len(ports)} ports scanned across {len(targets)} targets",
+                        'evidence': {
+                            'source_ip': src_ip,
+                            'ports_scanned': len(ports),
+                            'targets_count': len(targets),
+                            'scan_intensity': round(scan_intensity, 2),
+                            'ports_list': sorted(list(ports))[:20],
+                            'targets_list': sorted(list(targets))[:10]
+                        },
+                        'data': {
+                            'source': src_ip,
+                            'ports_scanned': len(ports),
+                            'targets_count': len(targets),
+                            'scan_intensity': scan_intensity
+                        }
+                    })
+            
+            # Detect network sweeps (5+ targets per IP)
+            for src_ip, targets in ip_target_map.items():
+                if len(targets) >= 5:
+                    # Analyze network ranges
+                    network_ranges = self._analyze_network_ranges(targets)
+                    
+                    findings.append({
+                        'type': 'enhanced_network_sweep',
+                        'severity': 'high',
+                        'count': 1,
+                        'description': f"Network reconnaissance from {src_ip}: {len(targets)} targets scanned",
+                        'evidence': {
+                            'scanner_ip': src_ip,
+                            'targets_count': len(targets),
+                            'network_ranges': network_ranges,
+                            'targets_sample': sorted(list(targets))[:10]
+                        },
+                        'data': {
+                            'scanner': src_ip,
+                            'targets_count': len(targets),
+                            'network_ranges': network_ranges
+                        }
+                    })
+                    
+        except Exception as e:
+            findings.append({
+                'type': 'enhanced_analysis_error',
+                'severity': 'low',
+                'count': 1,
+                'description': f"Enhanced Python analysis failed: {str(e)}",
+                'evidence': {},
+                'data': {'error': str(e)}
+            })
+            
+        return findings
+    
+    def _analyze_network_ranges(self, target_ips):
+        """Analyze target IPs to identify network ranges being scanned"""
+        ranges = {}
+        
+        for ip in target_ips:
+            parts = ip.split('.')
+            if len(parts) == 4:
+                # Group by /24 network
+                network = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+                if network not in ranges:
+                    ranges[network] = 0
+                ranges[network] += 1
+        
+        # Return networks with 3+ IPs
+        return [network for network, count in ranges.items() if count >= 3]
     
     def _analyze_with_topology_context(self, packets_data):
         """Analyze packets with network topology context"""
@@ -1132,6 +1360,9 @@ class EnhancedPcapAnalyzer:
             "rustml_port_scanning": "port_scanning",
             "rustml_port_scan": "port_scanning", 
             "rustml_suspicious_ports": "suspicious_ports",
+            "rustml_network_sweep": "network_reconnaissance",
+            "enhanced_port_scanning": "port_scanning",
+            "enhanced_network_sweep": "network_reconnaissance",
             "port_scan": "port_scanning",  # normalize variants
             "horizontal_scanning": "network_reconnaissance",
             "network_sweep": "network_reconnaissance"
@@ -1147,7 +1378,8 @@ class EnhancedPcapAnalyzer:
                 rt["type"] = mapping[typ]
             
             # Mark source so we can give rustml credit but avoid double counts
-            rt.setdefault("source", "rustml")
+            source = "enhanced_analysis" if typ.startswith("enhanced_") else "rustml"
+            rt.setdefault("source", source)
             mapped.append(rt)
         
         return mapped
@@ -1599,13 +1831,15 @@ class EnhancedPcapAnalyzer:
                         if finding_type == 'port_scanning':
                             f.write(f"� {severity_emoji} Port Scans Detected: {count}\n")
                             if finding.get('data'):
-                                for scan in finding['data'][:3]:
+                                data = finding.get('data') or []
+                                for scan in data[:3]:
                                     f.write(f"   • {scan}\n")
                         
                         elif finding_type == 'suspicious_ports':
                             f.write(f"🚨 {severity_emoji} Suspicious Port Activity: {count} connections\n")
                             if finding.get('data'):
-                                ports = [str(item.get('dst_port', 'unknown')) for item in finding['data'][:5]]
+                                data = finding.get('data') or []
+                                ports = [str(item.get('dst_port', 'unknown')) for item in data[:5]]
                                 f.write(f"   • Ports: {', '.join(ports)}\n")
                         
                         elif finding_type == 'large_packets':
@@ -1697,8 +1931,10 @@ class EnhancedPcapAnalyzer:
                     # Merge sample data (limited size)
                     if finding.get("data"):
                         existing.setdefault("data", [])
-                        existing["data"].extend(finding.get("data", [])[:3])
-                        existing["data"] = existing["data"][:10]  # Cap at 10 samples
+                        data_to_extend = finding.get("data") or []
+                        if isinstance(data_to_extend, list):
+                            existing["data"].extend(data_to_extend[:3])
+                            existing["data"] = existing["data"][:10]  # Cap at 10 samples
                 else:
                     # Normalize finding type using the same mapping
                     normalized_type = finding.get("type", "unknown")
@@ -1716,13 +1952,22 @@ class EnhancedPcapAnalyzer:
                     normalized_type = type_mappings.get(normalized_type, normalized_type)
                     
                     # Create new normalized finding
+                    # Safely process finding data - handle both list and dict cases
+                    finding_data = finding.get("data")
+                    if finding_data is not None and not isinstance(finding_data, list):
+                        # Convert dict or other types to list format
+                        if isinstance(finding_data, dict):
+                            finding_data = [finding_data]  # Wrap dict in list
+                        else:
+                            finding_data = []  # Default to empty list for other types
+                    
                     normalized_finding = {
                         "type": normalized_type,
                         "severity": finding.get("severity", "medium"),
                         "count": int(finding.get("count", 1)),
                         "description": finding.get("description", ""),
                         "evidence": finding.get("evidence", {}),
-                        "data": finding.get("data", [])[:10],
+                        "data": (finding_data or [])[:10],
                         "confidence": float(finding.get("confidence", 0.75)),
                         "detector_sources": [detector_source]
                     }
