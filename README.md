@@ -15,7 +15,7 @@ An advanced AI-powered network traffic analyzer that combines PCAP file analysis
 1. **Clone the repository:**
 
 ```bash
-git clone https://github.com/Juniorlcsss/entryshark.git
+git clone https://github.com/Juniorlcsss/entryshark
 cd entryshark
 ```
 
