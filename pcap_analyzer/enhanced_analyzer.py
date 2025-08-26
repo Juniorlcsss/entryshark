@@ -40,7 +40,7 @@ except ImportError:
 
 # Import Rust ML functions
 try:
-    from rustml import detect_port_scan, is_suspicious_port
+    from rustml import detect_port_scan, is_suspicious_port, extract_pcap_features
     RUSTML_AVAILABLE = True
 except ImportError:
     RUSTML_AVAILABLE = False
@@ -221,6 +221,28 @@ class EnhancedPcapAnalyzer:
         self.topology_context = topology_context or {}
         self.contextual_findings = []
     
+    def extract_features_with_rust(self, pcap_file, max_packets=100000):
+        """Extract features from PCAP using Rust for maximum performance"""
+        if not RUSTML_AVAILABLE:
+            print("❌ Rust ML not available, falling back to Scapy")
+            return self.extract_features_with_scapy(pcap_file)
+            
+        try:
+            print(f"📁 Reading PCAP with memory optimization: {Path(pcap_file).name}")
+            # Call Rust function for feature extraction
+            rust_result = extract_pcap_features(str(pcap_file), max_packets)
+            parsed_result = json.loads(rust_result)
+            
+            print(f"✅ Extracted {parsed_result['total_packets']} packet features from {Path(pcap_file).name}")
+            
+            # Return packets in the same format as Scapy method for compatibility
+            return parsed_result['packets']
+            
+        except Exception as e:
+            print(f"❌ Error with Rust feature extraction: {str(e)}")
+            print("🔄 Falling back to Scapy...")
+            return self.extract_features_with_scapy(pcap_file)
+
     def extract_features_with_scapy(self, pcap_file):
         """Extract features from PCAP using Scapy"""
         if not SCAPY_AVAILABLE:
@@ -281,8 +303,8 @@ class EnhancedPcapAnalyzer:
         for pcap_file in pcap_files:
             print(f"\n🔍 Analyzing {Path(pcap_file).name}...")
             
-            # Extract features using Scapy
-            packets_data = self.extract_features_with_scapy(pcap_file)
+            # Extract features using Rust (with Scapy fallback)
+            packets_data = self.extract_features_with_rust(pcap_file)
             if not packets_data:
                 print(f"❌ Failed to extract features from {pcap_file}")
                 continue
@@ -2500,7 +2522,30 @@ class MultithreadedPcapAnalyzer(EnhancedPcapAnalyzer):
             return None
     
     def _extract_features_optimized(self, pcap_file):
-        """Extract features with memory optimization"""
+        """Extract features with memory optimization using Rust for performance"""
+        if not RUSTML_AVAILABLE:
+            print("❌ Rust ML not available, falling back to Scapy")
+            return self._extract_features_scapy_fallback(pcap_file)
+        
+        try:
+            print(f"📁 Reading PCAP with memory optimization: {Path(pcap_file).name}")
+            
+            # Use Rust for feature extraction (much faster and memory efficient)
+            rust_result = extract_pcap_features(str(pcap_file), 1000000)  # Allow more packets for optimized version
+            parsed_result = json.loads(rust_result)
+            
+            print(f"✅ Extracted {parsed_result['total_packets']} packet features from {Path(pcap_file).name}")
+            
+            # Return packets in the same format as Scapy method for compatibility
+            return parsed_result['packets']
+            
+        except Exception as e:
+            print(f"❌ Error with Rust feature extraction: {str(e)}")
+            print("🔄 Falling back to Scapy...")
+            return self._extract_features_scapy_fallback(pcap_file)
+    
+    def _extract_features_scapy_fallback(self, pcap_file):
+        """Fallback Scapy feature extraction with memory optimization"""
         if not SCAPY_AVAILABLE:
             print("❌ Scapy not available for PCAP parsing")
             return []
