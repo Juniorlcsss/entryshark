@@ -1,0 +1,8 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-L", "C:\\msys64\\mingw64\\lib",
+    "-l", "python3.12"
+]
+
+[build]
+target = "x86_64-pc-windows-msvc"

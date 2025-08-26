@@ -34,7 +34,7 @@ except ImportError:
 
 # Import Enhanced Analyzer for topology-aware analysis
 try:
-    from enhanced_analyzer import EnhancedPcapAnalyzer, NetworkTopologyAnalyzer
+    from enhanced_analyzer import EnhancedPcapAnalyzer, NetworkTopologyAnalyzer, MultithreadedPcapAnalyzer
     ENHANCED_ANALYZER_AVAILABLE = True
 except ImportError:
     ENHANCED_ANALYZER_AVAILABLE = False
@@ -70,7 +70,7 @@ class EntrySharkApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(4, weight=1)
+        main_frame.rowconfigure(6, weight=1)
         
         # Title
         title_label = ttk.Label(main_frame, text="🦈 EntryShark PCAP Analyzer", 
@@ -104,8 +104,8 @@ class EntrySharkApp:
         files_label.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0))
         
         # Network topology section
-        topology_frame = ttk.LabelFrame(main_frame, text="Network Topology Analysis (Optional)", padding="10")
-        topology_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        topology_frame = ttk.LabelFrame(main_frame, text="Network Topology Analysis (Optional)", padding="15")
+        topology_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10))
         topology_frame.columnconfigure(1, weight=1)
         
         # Topology info
@@ -113,24 +113,51 @@ class EntrySharkApp:
                                  text="🤖 Upload network diagram for AI-enhanced contextual analysis",
                                  font=("Arial", 10),
                                  foreground="darkblue")
-        topology_info.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 5))
+        topology_info.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
         
         # Topology browse button
         self.topology_button = ttk.Button(topology_frame, text="📸 Select Network Diagram", 
-                                         command=self.browse_topology)
-        self.topology_button.grid(row=1, column=0, sticky=tk.W)
+                                         command=self.browse_topology, width=25)
+        self.topology_button.grid(row=1, column=0, sticky=tk.W, pady=(0, 5))
         
         # Topology file display
         self.topology_var = tk.StringVar(value="No network diagram selected")
-        topology_label = ttk.Label(topology_frame, textvariable=self.topology_var)
-        topology_label.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0))
+        topology_label = ttk.Label(topology_frame, textvariable=self.topology_var,
+                                  font=("Arial", 9), foreground="gray")
+        topology_label.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
         
         # Store selected topology file
         self.topology_file = None
         
+        # Performance Configuration section
+        perf_frame = ttk.LabelFrame(main_frame, text="Performance Settings", padding="10")
+        perf_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        perf_frame.columnconfigure(1, weight=1)
+        
+        # Thread count configuration
+        thread_label = ttk.Label(perf_frame, text="Max Threads:")
+        thread_label.grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        
+        self.thread_var = tk.IntVar(value=4)  # Default to 4 threads
+        thread_spinbox = ttk.Spinbox(perf_frame, from_=1, to=16, textvariable=self.thread_var, width=10)
+        thread_spinbox.grid(row=0, column=1, sticky=tk.W, padx=(0, 20))
+        
+        # Memory optimization checkbox
+        self.memory_opt_var = tk.BooleanVar(value=True)
+        memory_check = ttk.Checkbutton(perf_frame, text="Memory Optimization", 
+                                      variable=self.memory_opt_var)
+        memory_check.grid(row=0, column=2, sticky=tk.W)
+        
+        # Performance info
+        perf_info = ttk.Label(perf_frame, 
+                             text="🚀 Multithreading processes multiple PCAP files simultaneously",
+                             font=("Arial", 9),
+                             foreground="darkgreen")
+        perf_info.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
+        
         # Control buttons
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=3, column=0, columnspan=3, pady=10)
+        button_frame.grid(row=5, column=0, columnspan=3, pady=10)
         
         self.analyze_button = ttk.Button(button_frame, text="🔍 Analyze PCAP", 
                                         command=self.start_analysis, state="disabled")
@@ -146,7 +173,7 @@ class EntrySharkApp:
         
         # Progress bar
         self.progress_frame = ttk.Frame(main_frame)
-        self.progress_frame.grid(row=3, column=0, columnspan=3, pady=(5, 0), sticky=(tk.W, tk.E))
+        self.progress_frame.grid(row=4, column=0, columnspan=3, pady=(5, 0), sticky=(tk.W, tk.E))
         self.progress_frame.grid_remove()  # Hidden by default
         
         self.progress_bar = ttk.Progressbar(self.progress_frame, mode='indeterminate')
@@ -157,7 +184,7 @@ class EntrySharkApp:
         
         # Results area
         results_frame = ttk.LabelFrame(main_frame, text="Analysis Results", padding="5")
-        results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
+        results_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
         
@@ -172,7 +199,7 @@ class EntrySharkApp:
         self.status_var = tk.StringVar(value="Ready - Drop PCAP files to analyze")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, 
                               relief=tk.SUNKEN, font=("Arial", 9))
-        status_bar.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        status_bar.grid(row=7, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
         
         # Store selected files
         self.selected_files = []
@@ -194,7 +221,9 @@ class EntrySharkApp:
             self.selected_files = pcap_files
             self.update_file_display()
             self.analyze_button.config(state="normal")
-            self.status_var.set(f"Ready to analyze {len(pcap_files)} file(s)")
+            threads = self.thread_var.get()
+            memory_opt = "enabled" if self.memory_opt_var.get() else "disabled"
+            self.status_var.set(f"Ready to analyze {len(pcap_files)} file(s) - {threads} threads, memory opt {memory_opt}")
         else:
             messagebox.showwarning("Invalid Files", 
                                  "Please drop PCAP files (.pcap, .pcapng, .cap)")
@@ -213,7 +242,9 @@ class EntrySharkApp:
             self.selected_files = list(files)
             self.update_file_display()
             self.analyze_button.config(state="normal")
-            self.status_var.set(f"Ready to analyze {len(files)} file(s)")
+            threads = self.thread_var.get()
+            memory_opt = "enabled" if self.memory_opt_var.get() else "disabled"
+            self.status_var.set(f"Ready to analyze {len(files)} file(s) - {threads} threads, memory opt {memory_opt}")
     
     def browse_topology(self):
         """Browse for network topology image"""
@@ -288,17 +319,29 @@ class EntrySharkApp:
                                    os.path.exists(self.topology_file))
             
             if use_enhanced_analysis:
-                self.result_queue.put(("progress", "🤖 Initializing AI-Enhanced Analysis..."))
+                self.result_queue.put(("progress", "🤖 Initializing AI-Enhanced Analysis with Multithreading..."))
                 try:
                     # Step 1: Analyze network topology
                     self.result_queue.put(("progress", f"📸 Analyzing network topology: {os.path.basename(self.topology_file)}"))
                     topology_analyzer = NetworkTopologyAnalyzer()
                     network_context = topology_analyzer.analyze_network_topology(self.topology_file)
                     
-                    # Step 2: Analyze PCAP files with context
-                    self.result_queue.put(("progress", "🔍 Running enhanced PCAP analysis with topology context..."))
-                    enhanced_analyzer = EnhancedPcapAnalyzer(network_context)
-                    results = enhanced_analyzer.analyze_with_context(self.selected_files)
+                    # Step 2: Analyze PCAP files with multithreaded context
+                    max_threads = self.thread_var.get()
+                    memory_opt = self.memory_opt_var.get()
+                    
+                    self.result_queue.put(("progress", f"� Running multithreaded PCAP analysis ({max_threads} threads, memory opt: {memory_opt})..."))
+                    enhanced_analyzer = MultithreadedPcapAnalyzer(network_context, max_threads=max_threads)
+                    enhanced_analyzer.enable_memory_optimization(memory_opt)
+                    
+                    # Define progress callback for multithreaded analysis
+                    def progress_callback(message):
+                        self.result_queue.put(("progress", message))
+                    
+                    results = enhanced_analyzer.analyze_with_context_multithreaded(
+                        self.selected_files, 
+                        progress_callback=progress_callback
+                    )
                     
                     # Save enhanced results
                     self.result_queue.put(("progress", "💾 Saving enhanced analysis results..."))
@@ -317,35 +360,71 @@ class EntrySharkApp:
                     use_enhanced_analysis = False
             
             if not use_enhanced_analysis:
-                # Standard analysis without topology
-                all_results = []
+                # Check if we can use multithreaded analysis without topology
+                use_multithreaded = ENHANCED_ANALYZER_AVAILABLE and len(self.selected_files) > 1
                 
-                for i, pcap_file in enumerate(self.selected_files):
-                    # Update progress
-                    progress_msg = f"Analyzing {os.path.basename(pcap_file)} ({i+1}/{len(self.selected_files)})"
-                    self.result_queue.put(("progress", progress_msg))
-                    
-                    # Extract features using Scapy
-                    self.result_queue.put(("progress", f"Reading packets from {os.path.basename(pcap_file)}..."))
-                    packets_data = self.extract_features_with_scapy(pcap_file)
-                    
-                    if not packets_data:
-                        self.result_queue.put(("error", f"Failed to analyze {pcap_file}"))
-                        continue
-                    
-                    # Run analysis
-                    self.result_queue.put(("progress", f"Running security analysis on {os.path.basename(pcap_file)}..."))
-                    
-                    # Capture analysis results
-                    results = self.analyze_packets_with_context(packets_data, pcap_file)
-                    all_results.append(results)
+                if use_multithreaded:
+                    self.result_queue.put(("progress", "🚀 Running multithreaded standard analysis..."))
+                    try:
+                        max_threads = self.thread_var.get()
+                        memory_opt = self.memory_opt_var.get()
+                        
+                        enhanced_analyzer = MultithreadedPcapAnalyzer(None, max_threads=max_threads)
+                        enhanced_analyzer.enable_memory_optimization(memory_opt)
+                        
+                        # Define progress callback for multithreaded analysis
+                        def progress_callback(message):
+                            self.result_queue.put(("progress", message))
+                        
+                        results = enhanced_analyzer.analyze_with_context_multithreaded(
+                            self.selected_files, 
+                            progress_callback=progress_callback
+                        )
+                        
+                        all_results = results
+                        
+                        # Save results
+                        self.result_queue.put(("progress", "💾 Saving analysis results..."))
+                        self.save_gui_results(all_results)
+                        
+                        # Send final results
+                        self.result_queue.put(("results", all_results))
+                        
+                    except Exception as e:
+                        self.result_queue.put(("error", f"Multithreaded analysis failed: {str(e)}. Using sequential analysis."))
+                        # Fall back to sequential processing below
+                        use_multithreaded = False
                 
-                # Save results to analysis outputs folder
-                self.result_queue.put(("progress", "Saving analysis results..."))
-                self.save_gui_results(all_results)
-                
-                # Send final results
-                self.result_queue.put(("results", all_results))
+                if not use_multithreaded:
+                    # Standard sequential analysis without multithreading
+                    all_results = []
+                    
+                    for i, pcap_file in enumerate(self.selected_files):
+                        # Update progress
+                        progress_msg = f"Analyzing {os.path.basename(pcap_file)} ({i+1}/{len(self.selected_files)})"
+                        self.result_queue.put(("progress", progress_msg))
+                        
+                        # Extract features using Scapy
+                        self.result_queue.put(("progress", f"Reading packets from {os.path.basename(pcap_file)}..."))
+                        packets_data = self.extract_features_with_scapy(pcap_file)
+                        
+                        if not packets_data:
+                            self.result_queue.put(("error", f"Failed to analyze {pcap_file}"))
+                            continue
+                        
+                        # Run analysis
+                        self.result_queue.put(("progress", f"Running security analysis on {os.path.basename(pcap_file)}..."))
+                        
+                        # Capture analysis results
+                        results = self.analyze_packets_with_context(packets_data, pcap_file)
+                        all_results.append(results)
+                    
+                    # Save results to analysis outputs folder
+                    self.result_queue.put(("progress", "Saving analysis results..."))
+                    self.save_gui_results(all_results)
+                    
+                    # Send final results
+                    self.result_queue.put(("results", all_results))
             self.result_queue.put(("complete", all_results))
             
         except Exception as e:

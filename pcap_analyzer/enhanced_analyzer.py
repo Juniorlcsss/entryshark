@@ -11,6 +11,15 @@ import requests
 from datetime import datetime
 from pathlib import Path
 import sys
+import gc
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Any, Optional
+from collections import defaultdict, Counter
+import ipaddress
+from statistics import mean, median
+import time
+import re
 
 # Load .env file if available
 try:
@@ -930,32 +939,19 @@ class EnhancedPcapAnalyzer:
             # Enhanced port scan detection with source IP details
             if RUSTML_AVAILABLE:
                 try:
-                    # Try the new enhanced RustML functions first
-                    port_scan_results = detect_port_scan(packets_data, threshold=20)
+                    # Convert packet data to format expected by Rust function
+                    connections = [(pkt['src_ip'], pkt['dst_ip'], pkt['dst_port']) for pkt in packets_data]
+                    port_scan_results = detect_port_scan(connections)
                     if port_scan_results:
-                        # Handle structured data from enhanced RustML
-                        for scan_data in port_scan_results[:10]:
-                            if isinstance(scan_data, dict):
-                                source_ip = scan_data.get('source', 'Unknown')
-                                ports_scanned = scan_data.get('ports_scanned', 0)
-                                targets_count = scan_data.get('targets_count', 0)
-                                scan_intensity = scan_data.get('scan_intensity', 0.0)
-                                
-                                findings.append({
-                                    'type': 'rustml_port_scanning',
-                                    'severity': 'high',
-                                    'count': 1,
-                                    'description': f"Port scan from {source_ip}: {ports_scanned} ports scanned across {targets_count} targets",
-                                    'evidence': {
-                                        'source_ip': source_ip,
-                                        'ports_scanned': ports_scanned,
-                                        'targets_count': targets_count,
-                                        'scan_intensity': round(scan_intensity, 2),
-                                        'ports_list': (scan_data.get('ports_list') or [])[:20],
-                                        'targets_list': (scan_data.get('targets_list') or [])[:10]
-                                    },
-                                    'data': scan_data
-                                })
+                        # Handle simple string results from Rust
+                        for alert in port_scan_results[:10]:
+                            findings.append({
+                                'type': 'rustml_port_scanning',
+                                'severity': 'high',
+                                'count': 1,
+                                'description': alert,
+                                'evidence': {'rust_alert': alert}
+                            })
                     
                     # Try network sweep detection
                     try:
@@ -2411,6 +2407,201 @@ class EnhancedPcapAnalyzer:
         
         return findings
 
+class MultithreadedPcapAnalyzer(EnhancedPcapAnalyzer):
+    """Enhanced PCAP analyzer with multithreading and memory optimization"""
+    
+    def __init__(self, topology_context=None, max_threads=4):
+        super().__init__(topology_context)
+        self.max_threads = max_threads
+        self.memory_optimization = True
+        self.batch_size = 1000  # Process packets in batches for memory efficiency
+        self._lock = threading.Lock()
+        
+    def analyze_with_context_multithreaded(self, pcap_files, output_file=None, progress_callback=None):
+        """Analyze multiple PCAP files using multithreading with memory optimization"""
+        if not pcap_files:
+            return []
+        
+        all_results = []
+        total_files = len(pcap_files)
+        
+        print(f"🔄 Analyzing {total_files} PCAP files using {self.max_threads} threads...")
+        if progress_callback:
+            progress_callback(f"Starting analysis of {total_files} files with {self.max_threads} threads")
+        
+        # Use ThreadPoolExecutor for concurrent processing
+        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            # Submit all tasks
+            future_to_file = {
+                executor.submit(self._analyze_single_file_optimized, pcap_file, idx, total_files): pcap_file 
+                for idx, pcap_file in enumerate(pcap_files)
+            }
+            
+            # Collect results as they complete
+            completed_count = 0
+            for future in as_completed(future_to_file):
+                pcap_file = future_to_file[future]
+                completed_count += 1
+                
+                try:
+                    result = future.result()
+                    if result:
+                        all_results.append(result)
+                    
+                    # Update progress
+                    progress_msg = f"Completed {completed_count}/{total_files}: {Path(pcap_file).name}"
+                    print(f"✅ {progress_msg}")
+                    if progress_callback:
+                        progress_callback(progress_msg)
+                        
+                except Exception as e:
+                    error_msg = f"❌ Error analyzing {Path(pcap_file).name}: {str(e)}"
+                    print(error_msg)
+                    if progress_callback:
+                        progress_callback(error_msg)
+                
+                # Memory cleanup after each file
+                if self.memory_optimization:
+                    gc.collect()
+        
+        # Generate enhanced report
+        if output_file:
+            self._save_enhanced_report(all_results, output_file)
+        
+        print(f"🎉 Analysis complete! Processed {len(all_results)}/{total_files} files successfully")
+        return all_results
+    
+    def _analyze_single_file_optimized(self, pcap_file, file_index, total_files):
+        """Analyze a single PCAP file with memory optimization"""
+        try:
+            file_name = Path(pcap_file).name
+            print(f"🔍 [{file_index + 1}/{total_files}] Processing: {file_name}")
+            
+            # Extract features with memory optimization
+            packets_data = self._extract_features_optimized(pcap_file)
+            if not packets_data:
+                print(f"❌ Failed to extract features from {file_name}")
+                return None
+            
+            # Analyze packets with context
+            result = self.analyze_packets_with_context(packets_data, pcap_file)
+            
+            # Clear packets data to free memory
+            del packets_data
+            if self.memory_optimization:
+                gc.collect()
+            
+            return result
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ Error processing {Path(pcap_file).name}: {str(e)}")
+            print(f"❌ Error details: {traceback.format_exc()}")
+            return None
+    
+    def _extract_features_optimized(self, pcap_file):
+        """Extract features with memory optimization"""
+        if not SCAPY_AVAILABLE:
+            print("❌ Scapy not available for PCAP parsing")
+            return []
+        
+        try:
+            print(f"📁 Reading PCAP with memory optimization: {Path(pcap_file).name}")
+            
+            # Use generator for large files to reduce memory usage
+            packets_data = []
+            packet_count = 0
+            
+            # Read packets in batches
+            try:
+                packets = rdpcap(str(pcap_file))
+                total_packets = len(packets)
+                
+                for i in range(0, total_packets, self.batch_size):
+                    batch = packets[i:i + self.batch_size]
+                    batch_data = self._process_packet_batch(batch)
+                    packets_data.extend(batch_data)
+                    
+                    # Memory cleanup after each batch
+                    del batch_data
+                    if self.memory_optimization and i % (self.batch_size * 5) == 0:
+                        gc.collect()
+                
+                print(f"✅ Extracted {len(packets_data)} packet features from {Path(pcap_file).name}")
+                return packets_data
+                
+            except Exception as e:
+                print(f"❌ Error reading packets from {pcap_file}: {str(e)}")
+                return []
+            
+        except Exception as e:
+            print(f"❌ Error in feature extraction: {str(e)}")
+            return []
+    
+    def _process_packet_batch(self, batch):
+        """Process a batch of packets for memory efficiency"""
+        batch_data = []
+        
+        for pkt in batch:
+            try:
+                if IP in pkt:
+                    src_ip = pkt[IP].src
+                    dst_ip = pkt[IP].dst
+                    packet_size = len(pkt)
+                    
+                    src_port = 0
+                    dst_port = 0
+                    protocol = "Other"
+                    
+                    if TCP in pkt:
+                        src_port = pkt[TCP].sport
+                        dst_port = pkt[TCP].dport
+                        protocol = "TCP"
+                    elif UDP in pkt:
+                        src_port = pkt[UDP].sport
+                        dst_port = pkt[UDP].dport
+                        protocol = "UDP"
+                    
+                    packet_info = {
+                        'src_ip': src_ip,
+                        'dst_ip': dst_ip,
+                        'src_port': src_port,
+                        'dst_port': dst_port,
+                        'protocol': protocol,
+                        'packet_size': packet_size,
+                        'timestamp': float(pkt.time) if hasattr(pkt, 'time') else time.time()
+                    }
+                    
+                    batch_data.append(packet_info)
+                    
+            except Exception as e:
+                continue  # Skip malformed packets
+        
+        return batch_data
+    
+    def set_max_threads(self, max_threads):
+        """Set the maximum number of threads for processing"""
+        self.max_threads = max(1, min(max_threads, 16))  # Limit between 1-16 threads
+        print(f"🔧 Thread count set to: {self.max_threads}")
+    
+    def enable_memory_optimization(self, enabled=True):
+        """Enable or disable memory optimization features"""
+        self.memory_optimization = enabled
+        print(f"🧠 Memory optimization: {'enabled' if enabled else 'disabled'}")
+    
+    def set_batch_size(self, batch_size):
+        """Set the batch size for packet processing"""
+        self.batch_size = max(100, min(batch_size, 10000))  # Limit between 100-10000
+        print(f"📦 Batch size set to: {self.batch_size}")
+    
+    def get_performance_stats(self):
+        """Get performance statistics"""
+        return {
+            'max_threads': self.max_threads,
+            'memory_optimization': self.memory_optimization,
+            'batch_size': self.batch_size
+        }
+
 def main():
     """Main function for enhanced analysis"""
     if len(sys.argv) < 3:
@@ -2422,27 +2613,28 @@ def main():
     pcap_files = sys.argv[2:]
     
     print("🦈 EntryShark Enhanced Analyzer")
-    print("=" * 40)
+    print("=" * 50)
     
     # Step 1: Analyze network topology with AI vision
     print(f"\n🖼️  Analyzing network topology: {Path(topology_image).name}")
     topology_analyzer = NetworkTopologyAnalyzer()
     network_context = topology_analyzer.analyze_network_topology(topology_image)
     
-    # Step 2: Analyze PCAP files with context
+    # Step 2: Analyze PCAP files with multithreading
     print(f"\n📊 Analyzing {len(pcap_files)} PCAP file(s) with topology context...")
-    enhanced_analyzer = EnhancedPcapAnalyzer(network_context)
+    enhanced_analyzer = MultithreadedPcapAnalyzer(network_context, max_threads=4)
     
     # Generate output filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"enhanced_analysis_{timestamp}.json"
     
-    # Run enhanced analysis
-    results = enhanced_analyzer.analyze_with_context(pcap_files, output_file)
+    # Run enhanced analysis with multithreading
+    results = enhanced_analyzer.analyze_with_context_multithreaded(pcap_files, output_file)
     
-    print(f"\n✅ Analysis complete! Results saved to:")
-    print(f"   📄 JSON: {output_file}")
-    print(f"   📄 Text: {output_file.replace('.json', '.txt')}")
+    print(f"\n🎯 Analysis Results Summary:")
+    print(f"   - Files processed: {len(results)}")
+    print(f"   - Report saved to: {output_file}")
+    print(f"   - Performance: {enhanced_analyzer.get_performance_stats()}")
 
 if __name__ == "__main__":
     main()
