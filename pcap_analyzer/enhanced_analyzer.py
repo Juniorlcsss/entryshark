@@ -2408,26 +2408,464 @@ class EnhancedPcapAnalyzer:
         return findings
     
     def _detect_covert_channels(self, packets_data):
-        """Detect covert communication channels"""
+        """Detect covert communication channels using advanced analysis techniques"""
         findings = []
-        
-        # 1. ICMP tunneling detection
-        icmp_packets = [p for p in packets_data if p['protocol'] == 'ICMP']
-        if len(icmp_packets) > 100:  # Unusual amount of ICMP
+
+        if not packets_data:
+            return findings
+
+        # 1. ICMP Tunneling Detection
+        icmp_findings = self._detect_icmp_tunneling(packets_data)
+        findings.extend(icmp_findings)
+
+        # 2. Unusual Traffic Pattern Detection
+        pattern_findings = self._detect_unusual_traffic_patterns(packets_data)
+        findings.extend(pattern_findings)
+
+        # 3. DNS Tunneling Detection
+        dns_findings = self._detect_dns_tunneling(packets_data)
+        findings.extend(dns_findings)
+
+        # 4. HTTP/S Tunneling Detection
+        http_findings = self._detect_http_tunneling(packets_data)
+        findings.extend(http_findings)
+
+        # 5. Protocol Anomaly Detection
+        protocol_findings = self._detect_protocol_anomalies(packets_data)
+        findings.extend(protocol_findings)
+
+        return findings
+
+    def _detect_icmp_tunneling(self, packets_data):
+        """Advanced ICMP tunneling detection"""
+        findings = []
+        icmp_packets = [p for p in packets_data if p.get('protocol') == 'ICMP']
+
+        if len(icmp_packets) < 10:  # Need minimum packets for analysis
+            return findings
+
+        # Analyze ICMP packet characteristics
+        icmp_sizes = [p.get('length', 0) for p in icmp_packets]
+        icmp_types = [p.get('icmp_type', 0) for p in icmp_packets]
+        icmp_codes = [p.get('icmp_code', 0) for p in icmp_packets]
+
+        # 1. Unusual packet size patterns
+        avg_size = sum(icmp_sizes) / len(icmp_sizes)
+        size_variance = sum((x - avg_size) ** 2 for x in icmp_sizes) / len(icmp_sizes)
+
+        # Flag if sizes are unusually consistent (potential data encoding)
+        if size_variance < 10 and len(icmp_packets) > 50:
             findings.append({
-                'type': 'icmp_tunneling_potential',
+                'type': 'icmp_tunneling_suspicious_sizes',
+                'severity': 'high',
+                'count': len(icmp_packets),
+                'description': f"ICMP packets have unusually consistent sizes (variance: {size_variance:.2f}) - potential data encoding",
+                'evidence': {
+                    'average_size': avg_size,
+                    'size_variance': size_variance,
+                    'packet_count': len(icmp_packets),
+                    'size_distribution': self._get_size_distribution(icmp_sizes)
+                },
+                'data': icmp_sizes[:20]  # Sample of sizes
+            })
+
+        # 2. Unusual ICMP type/code combinations
+        type_code_pairs = list(zip(icmp_types, icmp_codes))
+        unique_pairs = set(type_code_pairs)
+
+        # Common legitimate ICMP types/codes
+        common_icmp = {(8, 0), (0, 0), (3, 0), (3, 1), (3, 3), (11, 0)}
+
+        unusual_pairs = [pair for pair in unique_pairs if pair not in common_icmp]
+        if unusual_pairs and len(unusual_pairs) > 2:
+            findings.append({
+                'type': 'icmp_unusual_type_code',
+                'severity': 'medium',
+                'count': len(unusual_pairs),
+                'description': f"Unusual ICMP type/code combinations detected: {unusual_pairs}",
+                'evidence': {
+                    'unusual_pairs': unusual_pairs,
+                    'total_unique_pairs': len(unique_pairs),
+                    'pair_frequency': self._get_pair_frequency(type_code_pairs)
+                },
+                'data': list(unusual_pairs)
+            })
+
+        # 3. High frequency ICMP traffic
+        total_packets = len(packets_data)
+        icmp_percentage = (len(icmp_packets) / total_packets) * 100
+
+        if icmp_percentage > 5:  # More than 5% ICMP is suspicious
+            findings.append({
+                'type': 'icmp_high_frequency',
                 'severity': 'medium',
                 'count': len(icmp_packets),
-                'description': f"Detected {len(icmp_packets)} ICMP packets (potential covert channel)",
+                'description': f"High ICMP traffic volume ({icmp_percentage:.1f}% of total packets)",
                 'evidence': {
-                    'icmp_packet_count': len(icmp_packets),
-                    'total_packets': len(packets_data),
-                    'icmp_percentage': (len(icmp_packets) / len(packets_data)) * 100
+                    'icmp_count': len(icmp_packets),
+                    'total_packets': total_packets,
+                    'percentage': icmp_percentage
                 },
                 'data': []
             })
-        
+
+        # 4. Timing analysis for ICMP packets
+        if len(icmp_packets) > 20:
+            timing_findings = self._analyze_icmp_timing(icmp_packets)
+            findings.extend(timing_findings)
+
         return findings
+
+    def _detect_unusual_traffic_patterns(self, packets_data):
+        """Detect unusual traffic patterns that may indicate covert channels"""
+        findings = []
+
+        # 1. Packet size analysis
+        sizes = [p.get('length', 0) for p in packets_data if p.get('length', 0) > 0]
+        if len(sizes) > 100:
+            size_findings = self._analyze_packet_sizes(sizes)
+            findings.extend(size_findings)
+
+        # 2. Timing analysis
+        if len(packets_data) > 50:
+            timing_findings = self._analyze_packet_timing(packets_data)
+            findings.extend(timing_findings)
+
+        # 3. Protocol distribution analysis
+        protocol_counts = {}
+        for p in packets_data:
+            proto = p.get('protocol', 'unknown')
+            protocol_counts[proto] = protocol_counts.get(proto, 0) + 1
+
+        # Detect unusual protocol concentrations
+        total_packets = len(packets_data)
+        for proto, count in protocol_counts.items():
+            percentage = (count / total_packets) * 100
+            if percentage > 70 and proto not in ['TCP', 'UDP']:  # Unusual concentration
+                findings.append({
+                    'type': 'protocol_concentration',
+                    'severity': 'medium',
+                    'count': count,
+                    'description': f"Unusual concentration of {proto} traffic ({percentage:.1f}%)",
+                    'evidence': {
+                        'protocol': proto,
+                        'count': count,
+                        'percentage': percentage,
+                        'total_packets': total_packets
+                    },
+                    'data': []
+                })
+
+        return findings
+
+    def _detect_dns_tunneling(self, packets_data):
+        """Detect DNS tunneling attempts"""
+        findings = []
+        dns_packets = [p for p in packets_data if p.get('protocol') == 'DNS' or p.get('dst_port') == 53]
+
+        if len(dns_packets) < 5:
+            return findings
+
+        # Analyze DNS query patterns
+        query_lengths = []
+        query_names = []
+
+        for p in dns_packets:
+            if 'dns_query' in p:
+                query = p['dns_query']
+                query_lengths.append(len(query))
+                query_names.append(query)
+
+        if query_lengths:
+            avg_length = sum(query_lengths) / len(query_lengths)
+
+            # Flag unusually long DNS queries (potential data exfiltration)
+            if avg_length > 50:  # Average domain name length
+                long_queries = [q for q in query_names if len(q) > 50]
+                findings.append({
+                    'type': 'dns_long_queries',
+                    'severity': 'high',
+                    'count': len(long_queries),
+                    'description': f"Unusually long DNS queries detected (avg length: {avg_length:.1f})",
+                    'evidence': {
+                        'average_length': avg_length,
+                        'long_queries_count': len(long_queries),
+                        'sample_queries': query_names[:10]
+                    },
+                    'data': long_queries[:20]
+                })
+
+            # Detect high frequency DNS queries
+            dns_rate = len(dns_packets) / len(packets_data) * 100
+            if dns_rate > 10:  # More than 10% DNS traffic
+                findings.append({
+                    'type': 'dns_high_frequency',
+                    'severity': 'medium',
+                    'count': len(dns_packets),
+                    'description': f"High DNS query frequency ({dns_rate:.1f}% of total traffic)",
+                    'evidence': {
+                        'dns_count': len(dns_packets),
+                        'total_packets': len(packets_data),
+                        'dns_rate': dns_rate
+                    },
+                    'data': []
+                })
+
+        return findings
+
+    def _detect_http_tunneling(self, packets_data):
+        """Detect HTTP/S tunneling attempts"""
+        findings = []
+        http_packets = [p for p in packets_data if p.get('dst_port') in [80, 443, 8080]]
+
+        if len(http_packets) < 10:
+            return findings
+
+        # Analyze HTTP payload patterns
+        payload_sizes = [p.get('length', 0) for p in http_packets]
+
+        if payload_sizes:
+            # Look for consistent payload sizes (potential data encoding)
+            avg_size = sum(payload_sizes) / len(payload_sizes)
+            size_variance = sum((x - avg_size) ** 2 for x in payload_sizes) / len(payload_sizes)
+
+            if size_variance < 100 and len(http_packets) > 50:
+                findings.append({
+                    'type': 'http_consistent_payloads',
+                    'severity': 'high',
+                    'count': len(http_packets),
+                    'description': f"HTTP packets have unusually consistent payload sizes (variance: {size_variance:.2f})",
+                    'evidence': {
+                        'average_size': avg_size,
+                        'size_variance': size_variance,
+                        'packet_count': len(http_packets)
+                    },
+                    'data': payload_sizes[:20]
+                })
+
+        return findings
+
+    def _detect_protocol_anomalies(self, packets_data):
+        """Detect protocol-level anomalies that may indicate covert channels"""
+        findings = []
+
+        # 1. Analyze TCP flag combinations
+        tcp_packets = [p for p in packets_data if p.get('protocol') == 'TCP']
+        if len(tcp_packets) > 20:
+            flag_findings = self._analyze_tcp_flags(tcp_packets)
+            findings.extend(flag_findings)
+
+        # 2. UDP packet size analysis
+        udp_packets = [p for p in packets_data if p.get('protocol') == 'UDP']
+        if len(udp_packets) > 20:
+            udp_findings = self._analyze_udp_patterns(udp_packets)
+            findings.extend(udp_findings)
+
+        return findings
+
+    def _analyze_icmp_timing(self, icmp_packets):
+        """Analyze timing patterns in ICMP packets"""
+        findings = []
+
+        if len(icmp_packets) < 10:
+            return findings
+
+        # Extract timestamps
+        timestamps = []
+        for p in icmp_packets:
+            if 'timestamp' in p:
+                timestamps.append(p['timestamp'])
+            elif 'time' in p:
+                timestamps.append(p['time'])
+
+        if len(timestamps) < 10:
+            return findings
+
+        # Calculate inter-packet delays
+        delays = []
+        for i in range(1, len(timestamps)):
+            delay = timestamps[i] - timestamps[i-1]
+            if delay > 0:  # Avoid negative delays
+                delays.append(delay)
+
+        if delays:
+            avg_delay = sum(delays) / len(delays)
+            delay_variance = sum((x - avg_delay) ** 2 for x in delays) / len(delays)
+
+            # Flag very regular timing (potential beaconing)
+            if delay_variance < 0.01 and avg_delay > 0.1:  # Regular timing with minimum delay
+                findings.append({
+                    'type': 'icmp_regular_timing',
+                    'severity': 'high',
+                    'count': len(delays),
+                    'description': f"ICMP packets show regular timing pattern (avg delay: {avg_delay:.3f}s, variance: {delay_variance:.6f})",
+                    'evidence': {
+                        'average_delay': avg_delay,
+                        'delay_variance': delay_variance,
+                        'delays_sample': delays[:20]
+                    },
+                    'data': delays[:50]
+                })
+
+        return findings
+
+    def _analyze_packet_sizes(self, sizes):
+        """Analyze packet size distributions for anomalies"""
+        findings = []
+
+        if len(sizes) < 50:
+            return findings
+
+        # Calculate statistics
+        avg_size = sum(sizes) / len(sizes)
+        median_size = sorted(sizes)[len(sizes)//2]
+        size_variance = sum((x - avg_size) ** 2 for x in sizes) / len(sizes)
+
+        # Flag unusually uniform sizes
+        if size_variance < 1000 and len(sizes) > 100:
+            findings.append({
+                'type': 'uniform_packet_sizes',
+                'severity': 'medium',
+                'count': len(sizes),
+                'description': f"Packets have unusually uniform sizes (variance: {size_variance:.2f})",
+                'evidence': {
+                    'average_size': avg_size,
+                    'median_size': median_size,
+                    'size_variance': size_variance,
+                    'size_range': f"{min(sizes)}-{max(sizes)}"
+                },
+                'data': sizes[:50]
+            })
+
+        return findings
+
+    def _analyze_packet_timing(self, packets_data):
+        """Analyze timing patterns in packet streams"""
+        findings = []
+
+        # Extract timestamps
+        timestamps = []
+        for p in packets_data:
+            if 'timestamp' in p:
+                timestamps.append(p['timestamp'])
+            elif 'time' in p:
+                timestamps.append(p['time'])
+
+        if len(timestamps) < 20:
+            return findings
+
+        # Calculate inter-packet delays
+        delays = []
+        for i in range(1, len(timestamps)):
+            delay = timestamps[i] - timestamps[i-1]
+            if delay > 0 and delay < 10:  # Reasonable delay range
+                delays.append(delay)
+
+        if len(delays) > 10:
+            avg_delay = sum(delays) / len(delays)
+            delay_variance = sum((x - avg_delay) ** 2 for x in delays) / len(delays)
+
+            # Flag very regular timing
+            if delay_variance < 0.001 and len(delays) > 50:
+                findings.append({
+                    'type': 'regular_packet_timing',
+                    'severity': 'high',
+                    'count': len(delays),
+                    'description': f"Packets show highly regular timing pattern (avg delay: {avg_delay:.6f}s)",
+                    'evidence': {
+                        'average_delay': avg_delay,
+                        'delay_variance': delay_variance,
+                        'timing_pattern': 'regular'
+                    },
+                    'data': delays[:50]
+                })
+
+        return findings
+
+    def _analyze_tcp_flags(self, tcp_packets):
+        """Analyze TCP flag combinations for anomalies"""
+        findings = []
+
+        flag_combinations = []
+        for p in tcp_packets:
+            flags = p.get('tcp_flags', [])
+            if flags:
+                flag_combinations.append(tuple(sorted(flags)))
+
+        if len(flag_combinations) < 10:
+            return findings
+
+        # Count unique flag combinations
+        from collections import Counter
+        flag_counts = Counter(flag_combinations)
+
+        # Flag unusual flag combinations
+        unusual_flags = []
+        common_flags = [('ACK',), ('SYN',), ('SYN', 'ACK'), ('FIN', 'ACK'), ('RST',)]
+
+        for flags, count in flag_counts.items():
+            if flags not in common_flags and count > 5:
+                unusual_flags.append((flags, count))
+
+        if unusual_flags:
+            findings.append({
+                'type': 'unusual_tcp_flags',
+                'severity': 'medium',
+                'count': len(unusual_flags),
+                'description': f"Unusual TCP flag combinations detected",
+                'evidence': {
+                    'unusual_flags': unusual_flags,
+                    'total_combinations': len(flag_counts)
+                },
+                'data': unusual_flags
+            })
+
+        return findings
+
+    def _analyze_udp_patterns(self, udp_packets):
+        """Analyze UDP packet patterns for anomalies"""
+        findings = []
+
+        sizes = [p.get('length', 0) for p in udp_packets]
+        if len(sizes) < 20:
+            return findings
+
+        # Look for consistent UDP sizes (potential data channels)
+        avg_size = sum(sizes) / len(sizes)
+        size_variance = sum((x - avg_size) ** 2 for x in sizes) / len(sizes)
+
+        if size_variance < 50 and len(sizes) > 50:
+            findings.append({
+                'type': 'udp_consistent_sizes',
+                'severity': 'medium',
+                'count': len(sizes),
+                'description': f"UDP packets have unusually consistent sizes (variance: {size_variance:.2f})",
+                'evidence': {
+                    'average_size': avg_size,
+                    'size_variance': size_variance,
+                    'packet_count': len(sizes)
+                },
+                'data': sizes[:20]
+            })
+
+        return findings
+
+    def _get_size_distribution(self, sizes):
+        """Get size distribution statistics"""
+        if not sizes:
+            return {}
+
+        return {
+            'min': min(sizes),
+            'max': max(sizes),
+            'mean': sum(sizes) / len(sizes),
+            'median': sorted(sizes)[len(sizes)//2]
+        }
+
+    def _get_pair_frequency(self, pairs):
+        """Get frequency of type/code pairs"""
+        from collections import Counter
+        return dict(Counter(pairs))
 
 class MultithreadedPcapAnalyzer(EnhancedPcapAnalyzer):
     """Enhanced PCAP analyzer with multithreading and memory optimization"""
