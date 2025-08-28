@@ -40,7 +40,9 @@ except ImportError:
 
 # Import Rust ML functions
 try:
-    from rustml import detect_port_scan, is_suspicious_port, extract_pcap_features
+    from rustml import (detect_port_scan, is_suspicious_port, extract_pcap_features,
+                       train_anomaly_model, detect_anomalies_with_model, train_and_detect_anomalies,
+                       PacketFeature)
     RUSTML_AVAILABLE = True
 except ImportError:
     RUSTML_AVAILABLE = False
@@ -217,9 +219,14 @@ Format your response as valid JSON with these keys:
         return self.network_context
 
 class EnhancedPcapAnalyzer:
-    def __init__(self, topology_context=None):
+    def __init__(self, topology_context=None, use_ml_detection=False, ml_model_path=None, contamination_rate=0.1):
         self.topology_context = topology_context or {}
         self.contextual_findings = []
+        
+        # ML detection configuration
+        self.use_ml_detection = use_ml_detection
+        self.ml_model_path = ml_model_path
+        self.contamination_rate = contamination_rate
     
     def extract_features_with_rust(self, pcap_file, max_packets=100000):
         """Extract features from PCAP using Rust for maximum performance"""
@@ -356,6 +363,15 @@ class EnhancedPcapAnalyzer:
         # 3. Unusual Traffic Patterns
         traffic_anomaly_findings = self._detect_traffic_anomalies(packets_data)
         findings.extend(traffic_anomaly_findings)
+        
+        # 3.5. ML-Based Anomaly Detection (if enabled)
+        if getattr(self, 'use_ml_detection', False):
+            ml_findings = self._detect_ml_anomalies(
+                packets_data, 
+                getattr(self, 'ml_model_path', None),
+                getattr(self, 'contamination_rate', 0.1)
+            )
+            findings.extend(ml_findings)
         
         # 4. Potential Data Exfiltration
         exfiltration_findings = self._detect_data_exfiltration(packets_data)
@@ -628,6 +644,135 @@ class EnhancedPcapAnalyzer:
                 })
         
         return findings
+    
+    def _detect_ml_anomalies(self, packets_data, model_path=None, contamination_rate=0.1):
+        """Detect anomalies using machine learning (self-learning approach)"""
+        findings = []
+        
+        if not RUSTML_AVAILABLE:
+            findings.append({
+                'type': 'ml_not_available',
+                'severity': 'info',
+                'count': 0,
+                'confidence': 0.75,
+                'description': "ML-based anomaly detection not available (rustml not installed)",
+                'evidence': {'detection_method': 'rule_based'},
+                'data': []
+            })
+            return findings
+        
+        try:
+            # Convert packet data to PacketFeature objects expected by Rust ML functions
+            packet_features = []
+            for packet in packets_data:
+                # Create PacketFeature object with proper data types
+                feature = PacketFeature()
+                feature.src_ip = str(packet.get('src_ip', ''))
+                feature.dst_ip = str(packet.get('dst_ip', ''))
+                feature.src_port = int(packet.get('src_port', 0))
+                feature.dst_port = int(packet.get('dst_port', 0))
+                feature.protocol = str(packet.get('protocol', 'unknown'))
+                feature.packet_size = int(packet.get('packet_size', packet.get('length', 0)))
+                feature.timestamp = float(packet.get('timestamp', packet.get('time', 0.0)))
+                packet_features.append(feature)
+            
+            if model_path and os.path.exists(model_path):
+                # Use existing trained model
+                print(f"🤖 Using existing ML model: {model_path}")
+                anomalies = detect_anomalies_with_model(packet_features, model_path)
+            else:
+                # Train and detect in one step
+                print(f"🧠 Training new ML model on {len(packet_features)} packets...")
+                anomalies = train_and_detect_anomalies(packet_features, contamination_rate)
+
+                # Save the trained model for future use if path is specified
+                if model_path:
+                    try:
+                        print(f"💾 Saving trained model to: {model_path}")
+                        # The model is already trained and saved by train_and_detect_anomalies
+                        # but we could also save it separately if needed
+                        print(f"✅ ML model saved and ready for future analysis")
+                    except Exception as save_error:
+                        print(f"⚠️  Could not save model: {str(save_error)}")
+
+                print(f"🎯 ML training complete - detected {len(anomalies)} anomalies")
+            
+            # Convert Rust anomalies to our findings format
+            for anomaly in anomalies:
+                findings.append({
+                    'type': 'ml_anomaly',
+                    'severity': 'high',
+                    'count': 1,
+                    'confidence': 0.85,  # ML-based detection has high confidence
+                    'description': f"ML-detected anomaly: {anomaly}",
+                    'evidence': {
+                        'detection_method': 'machine_learning',
+                        'anomaly_description': anomaly
+                    },
+                    'data': [anomaly]
+                })
+            
+        except Exception as e:
+            findings.append({
+                'type': 'ml_error',
+                'severity': 'info',
+                'count': 0,
+                'confidence': 0.75,
+                'description': f"ML anomaly detection error: {str(e)}",
+                'evidence': {'error': str(e), 'detection_method': 'rule_based'},
+                'data': []
+            })
+        
+        return findings
+    
+    def train_ml_model(self, packets_data, model_path="network_anomaly_model.json"):
+        """Train an ML model on normal traffic patterns"""
+        if not RUSTML_AVAILABLE:
+            print("❌ ML training not available (rustml not installed)")
+            return False
+        
+        try:
+            # Convert packet data to PacketFeature objects expected by Rust ML functions
+            packet_features = []
+            for packet in packets_data:
+                # Create PacketFeature object with proper data types
+                feature = PacketFeature()
+                feature.src_ip = str(packet.get('src_ip', ''))
+                feature.dst_ip = str(packet.get('dst_ip', ''))
+                feature.src_port = int(packet.get('src_port', 0))
+                feature.dst_port = int(packet.get('dst_port', 0))
+                feature.protocol = str(packet.get('protocol', 'unknown'))
+                feature.packet_size = int(packet.get('packet_size', packet.get('length', 0)))
+                feature.timestamp = float(packet.get('timestamp', packet.get('time', 0.0)))
+                packet_features.append(feature)
+            
+            result = train_anomaly_model(packet_features, model_path)
+            print(f"✅ ML model trained: {result}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ ML training failed: {str(e)}")
+            return False
+    
+    def enable_ml_detection(self, model_path="network_anomaly_model.json", contamination_rate=0.1):
+        """Enable ML-based anomaly detection"""
+        if not RUSTML_AVAILABLE:
+            print("❌ ML detection not available (rustml not installed)")
+            print("Install with: pip install -e ./rustml")
+            return False
+        
+        self.use_ml_detection = True
+        self.ml_model_path = model_path
+        self.contamination_rate = contamination_rate
+        print(f"✅ ML-based anomaly detection enabled")
+        print(f"   Model path: {model_path}")
+        print(f"   Contamination rate: {contamination_rate}")
+        return True
+    
+    def disable_ml_detection(self):
+        """Disable ML-based anomaly detection"""
+        self.use_ml_detection = False
+        print("✅ ML-based anomaly detection disabled")
     
     def _detect_data_exfiltration(self, packets_data):
         """Detect potential data exfiltration"""
@@ -1341,13 +1486,14 @@ class EnhancedPcapAnalyzer:
             'high_severity': sum(f.get('count', 0) for f in high_confidence_findings if f.get('severity') == 'high'),
             'medium_severity': sum(f.get('count', 0) for f in high_confidence_findings if f.get('severity') == 'medium'),
             'low_severity': sum(f.get('count', 0) for f in high_confidence_findings if f.get('severity') == 'low'),
+            'info_severity': sum(f.get('count', 0) for f in high_confidence_findings if f.get('severity') == 'info'),
             'unique_findings': len(high_confidence_findings),
             'contextual_findings': 0  # Will be updated if topology context available
         }
         
         # Sort findings by severity and confidence
-        severity_order = {"high": 3, "medium": 2, "low": 1}
-        high_confidence_findings.sort(key=lambda x: (severity_order.get(x["severity"], 0), x["confidence"]), reverse=True)
+        severity_order = {"high": 3, "medium": 2, "low": 1, "info": 0}
+        high_confidence_findings.sort(key=lambda x: (severity_order.get(x.get("severity", "low"), 0), x.get("confidence", 0)), reverse=True)
         
         # Update results with normalized findings
         updated_results = []
@@ -1604,15 +1750,18 @@ class EnhancedPcapAnalyzer:
                     f.write("-" * 18 + "\n")
                     
                     # Group findings by severity
-                    findings_by_severity = {'high': [], 'medium': [], 'low': []}
+                    findings_by_severity = {'high': [], 'medium': [], 'low': [], 'info': []}
                     for finding in result['findings']:
                         severity = finding.get('severity', 'low')
-                        findings_by_severity[severity].append(finding)
+                        if severity in findings_by_severity:
+                            findings_by_severity[severity].append(finding)
+                        else:
+                            findings_by_severity['low'].append(finding)  # Default unknown severities to low
                     
                     # Report by severity
-                    for severity in ['high', 'medium', 'low']:
+                    for severity in ['high', 'medium', 'low', 'info']:
                         if findings_by_severity[severity]:
-                            severity_icon = "🔴" if severity == 'high' else "🟡" if severity == 'medium' else "🟢"
+                            severity_icon = "🔴" if severity == 'high' else "🟡" if severity == 'medium' else "🟢" if severity == 'low' else "ℹ️"
                             f.write(f"\n{severity_icon} {severity.upper()} SEVERITY THREATS:\n")
                             
                             for finding in findings_by_severity[severity]:

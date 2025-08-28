@@ -4,6 +4,7 @@ EntryShark GUI - Desktop Application for PCAP Analysis
 Drag and drop interface for analyzing network traffic
 """
 
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -14,6 +15,16 @@ import json
 from datetime import datetime
 from pathlib import Path
 import sys
+import traceback
+import gc
+
+# Global exception handler for diagnostics
+def exception_hook(exc_type, exc_value, exc_traceback):
+    print("\n❌ Unhandled exception in GUI:")
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = exception_hook
 
 # Import our working analyzer components
 try:
@@ -60,6 +71,37 @@ class EntrySharkApp:
         # Start checking for results
         self.check_results()
     
+    def clear_results(self):
+        """Clear the results area"""
+        self.results_text.config(state=tk.NORMAL)
+        self.results_text.delete(1.0, tk.END)
+        self.results_text.config(state=tk.DISABLED)
+        self.current_results = None
+
+    def save_report(self):
+        """Save analysis report to file (runs in background thread)"""
+        if not hasattr(self, 'current_results') or not self.current_results:
+            messagebox.showwarning("No Results", "No analysis results to save")
+            return
+
+        # Set default save directory to analysis outputs folder
+        output_dir = Path(__file__).parent.parent / "analysis outputs"
+        output_dir.mkdir(exist_ok=True)
+        
+        filename = filedialog.asksaveasfilename(
+            title="Save Analysis Report",
+            defaultextension=".json",
+            initialdir=str(output_dir),
+            filetypes=[
+                ("JSON files", "*.json")
+            ]
+        )
+
+        if filename:
+            self.status_var.set("Saving report in background...")
+            self.save_button.config(state="disabled")
+            threading.Thread(target=self._save_report_background, args=(filename,), daemon=True).start()
+
     def setup_ui(self):
         """Set up the user interface"""
         # Main frame
@@ -333,6 +375,16 @@ class EntrySharkApp:
                     self.result_queue.put(("progress", f"� Running multithreaded PCAP analysis ({max_threads} threads, memory opt: {memory_opt})..."))
                     enhanced_analyzer = MultithreadedPcapAnalyzer(network_context, max_threads=max_threads)
                     enhanced_analyzer.enable_memory_optimization(memory_opt)
+
+                    # Enable ML-based anomaly detection with automatic training
+                    ml_enabled = enhanced_analyzer.enable_ml_detection(
+                        model_path="auto_trained_network_model.json",
+                        contamination_rate=0.1
+                    )
+                    if ml_enabled:
+                        self.result_queue.put(("progress", "🤖 ML-based anomaly detection enabled (will auto-train if needed)"))
+                    else:
+                        self.result_queue.put(("progress", "⚠️  ML detection not available (rustml not installed)"))
                     
                     # Define progress callback for multithreaded analysis
                     def progress_callback(message):
@@ -614,119 +666,135 @@ class EntrySharkApp:
         try:
             while True:
                 msg_type, data = self.result_queue.get_nowait()
-                
+                print(f"[DIAG] check_results: msg_type={msg_type}")
                 if msg_type == "progress":
-                    self.progress_label.config(text=data)
-                
+                    try:
+                        self.progress_label.config(text=data)
+                    except Exception as e:
+                        print(f"[DIAG] Exception updating progress_label: {e}")
+                        traceback.print_exc()
                 elif msg_type == "error":
-                    self.progress_bar.stop()
-                    self.progress_frame.grid_remove()
-                    self.analyze_button.config(state="normal")
-                    self.status_var.set("Analysis failed")
-                    self.append_result(f"❌ Error: {data}\n")
-                    messagebox.showerror("Analysis Error", data)
-                
+                    try:
+                        self.progress_bar.stop()
+                        self.progress_frame.grid_remove()
+                        self.analyze_button.config(state="normal")
+                        self.status_var.set("Analysis failed")
+                        self.append_result(f"❌ Error: {data}\n")
+                        messagebox.showerror("Analysis Error", data)
+                    except Exception as e:
+                        print(f"[DIAG] Exception handling error message: {e}")
+                        traceback.print_exc()
                 elif msg_type == "complete":
-                    self.progress_bar.stop()
-                    self.progress_frame.grid_remove()
-                    self.analyze_button.config(state="normal")
-                    self.save_button.config(state="normal")
-                    self.status_var.set("Analysis complete")
-                    
-                    # Display results
-                    self.display_results(data)
-                
+                    try:
+                        self.progress_bar.stop()
+                        self.progress_frame.grid_remove()
+                        self.analyze_button.config(state="normal")
+                        self.save_button.config(state="normal")
+                        self.status_var.set("Analysis complete")
+                        # Schedule display_results on main thread
+                        self.root.after(0, lambda: self.display_results(data))
+                        print("[DIAG] Called display_results after analysis complete")
+                        gc.collect()
+                        print("[DIAG] Forced garbage collection after analysis complete")
+                    except Exception as e:
+                        print(f"[DIAG] Exception in complete handler: {e}")
+                        traceback.print_exc()
                 elif msg_type == "enhanced_results":
-                    self.progress_bar.stop()
-                    self.progress_frame.grid_remove()
-                    self.analyze_button.config(state="normal")
-                    self.save_button.config(state="normal")
-                    self.status_var.set("🤖 AI-Enhanced Analysis complete")
-                    
-                    # Display enhanced results
-                    self.display_enhanced_results(data)
-                
+                    try:
+                        self.progress_bar.stop()
+                        self.progress_frame.grid_remove()
+                        self.analyze_button.config(state="normal")
+                        self.save_button.config(state="normal")
+                        self.status_var.set("🤖 AI-Enhanced Analysis complete")
+                        # Schedule display_enhanced_results on main thread
+                        self.root.after(0, lambda: self.display_enhanced_results(data))
+                        print("[DIAG] Called display_enhanced_results after enhanced analysis")
+                        gc.collect()
+                        print("[DIAG] Forced garbage collection after enhanced analysis")
+                    except Exception as e:
+                        print(f"[DIAG] Exception in enhanced_results handler: {e}")
+                        traceback.print_exc()
                 elif msg_type == "results":
                     self.result_queue.put(("complete", data))
-                    
         except queue.Empty:
             pass
-        
+        except Exception as e:
+            print(f"[DIAG] Exception in check_results main loop: {e}")
+            traceback.print_exc()
         # Schedule next check
         self.root.after(100, self.check_results)
     
+    def append_result(self, text):
+        """Append text to results area"""
+        self.results_text.config(state=tk.NORMAL)
+        self.results_text.insert(tk.END, text)
+        self.results_text.config(state=tk.DISABLED)
+        self.results_text.see(tk.END)
+
     def display_results(self, all_results):
-        """Display analysis results in the GUI"""
-        self.clear_results()
-        
-        total_packets = 0
-        total_findings = 0
-        
-        self.append_result("🦈 ENTRYSHARK ANALYSIS RESULTS\n")
-        self.append_result("="*60 + "\n\n")
-        
-        for i, results in enumerate(all_results):
-            filename = os.path.basename(results['file'])
-            stats = results.get('stats', {})
-            findings = results.get('findings', [])
-            
-            # Update totals
-            total_packets += stats.get('total_packets', 0)
-            total_findings += sum(f.get('count', 0) for f in findings)
-            
-            self.append_result(f"📄 File: {filename}\n")
-            self.append_result(f"⏰ Analyzed: {results['timestamp']}\n")
-            self.append_result("-" * 40 + "\n")
-            
-            # Basic Statistics
-            self.append_result("📊 STATISTICS:\n")
-            self.append_result(f"   Total Packets: {stats.get('total_packets', 0):,}\n")
-            self.append_result(f"   Unique IPs: {stats.get('unique_ips', 0)}\n")
-            self.append_result(f"   Protocols: {stats.get('protocols', {})}\n")
-            
-            top_ports = stats.get('top_ports', {})
-            if top_ports:
-                self.append_result(f"   Top Ports: {dict(list(top_ports.items())[:5])}\n")
-            self.append_result("\n")
-            
-            # Security Findings
-            self.append_result("🔍 SECURITY FINDINGS:\n")
-            if findings:
-                for finding in findings:
-                    severity_icon = "🔴" if finding['severity'] == 'high' else "🟡" if finding['severity'] == 'medium' else "🟢"
-                    self.append_result(f"   {severity_icon} {finding['type'].upper()}: {finding['count']} instances\n")
-                    
-                    # Show sample data for some finding types
-                    if finding['type'] == 'port_scanning' and 'data' in finding:
-                        for scanner in finding['data'][:3]:  # Show first 3
-                            self.append_result(f"      • {scanner}\n")
-                    elif finding['type'] == 'suspicious_ports' and 'data' in finding:
-                        for conn in finding['data'][:3]:  # Show first 3
-                            self.append_result(f"      • {conn.get('src_ip', 'N/A')} -> {conn.get('dst_ip', 'N/A')}:{conn.get('dst_port', 'N/A')}\n")
-                    elif finding['type'] == 'large_packets' and 'data' in finding:
-                        for pkt in finding['data'][:3]:  # Show first 3
-                            self.append_result(f"      • {pkt.get('src_ip', 'N/A')} -> {pkt.get('dst_ip', 'N/A')}: {pkt.get('packet_size', 0)} bytes\n")
+        """Display analysis results in the GUI (truncated for performance)"""
+        try:
+            print("[DIAG] Entered display_results")
+            self.clear_results()
+            total_packets = 0
+            total_findings = 0
+            MAX_FINDINGS_DISPLAY = 100
+            self.append_result("🦈 ENTRYSHARK ANALYSIS RESULTS (Truncated for performance)\n")
+            self.append_result("="*60 + "\n\n")
+            for i, results in enumerate(all_results):
+                filename = os.path.basename(results['file'])
+                stats = results.get('stats', {})
+                findings = results.get('findings', [])
+                total_packets += stats.get('total_packets', 0)
+                total_findings += sum(f.get('count', 0) for f in findings)
+                self.append_result(f"📄 File: {filename}\n")
+                self.append_result(f"⏰ Analyzed: {results['timestamp']}\n")
+                self.append_result("-" * 40 + "\n")
+                self.append_result("📊 STATISTICS:\n")
+                self.append_result(f"   Total Packets: {stats.get('total_packets', 0):,}\n")
+                self.append_result(f"   Unique IPs: {stats.get('unique_ips', 0)}\n")
+                self.append_result(f"   Protocols: {stats.get('protocols', {})}\n")
+                top_ports = stats.get('top_ports', {})
+                if top_ports:
+                    self.append_result(f"   Top Ports: {dict(list(top_ports.items())[:5])}\n")
                 self.append_result("\n")
+                self.append_result("🔍 SECURITY FINDINGS (showing first 100 only):\n")
+                if findings:
+                    for idx, finding in enumerate(findings):
+                        if idx >= MAX_FINDINGS_DISPLAY:
+                            self.append_result(f"   ... {len(findings) - MAX_FINDINGS_DISPLAY} more findings truncated ...\n")
+                            break
+                        severity_icon = "🔴" if finding['severity'] == 'high' else "🟡" if finding['severity'] == 'medium' else "🟢"
+                        self.append_result(f"   {severity_icon} {finding['type'].upper()}: {finding['count']} instances\n")
+                        if finding['type'] == 'port_scanning' and 'data' in finding:
+                            for scanner in finding['data'][:3]:
+                                self.append_result(f"      • {scanner}\n")
+                        elif finding['type'] == 'suspicious_ports' and 'data' in finding:
+                            for conn in finding['data'][:3]:
+                                self.append_result(f"      • {conn.get('src_ip', 'N/A')} -> {conn.get('dst_ip', 'N/A')}:{conn.get('dst_port', 'N/A')}\n")
+                        elif finding['type'] == 'large_packets' and 'data' in finding:
+                            for pkt in finding['data'][:3]:
+                                self.append_result(f"      • {pkt.get('src_ip', 'N/A')} -> {pkt.get('dst_ip', 'N/A')}: {pkt.get('packet_size', 0)} bytes\n")
+                    self.append_result("\n")
+                else:
+                    self.append_result("   ✅ No security issues detected\n\n")
+                if i < len(all_results) - 1:
+                    self.append_result("\n" + "="*60 + "\n\n")
+            self.append_result("📋 SUMMARY\n")
+            self.append_result("="*20 + "\n")
+            self.append_result(f"Files Analyzed: {len(all_results)}\n")
+            self.append_result(f"Total Packets: {total_packets:,}\n")
+            self.append_result(f"Security Findings: {total_findings}\n")
+            self.append_result("\n⚠️  Only the first 100 findings per file are shown. See the saved report for full details.\n")
+            if total_findings > 0:
+                self.append_result("\n⚠️  Review security findings above for potential threats.\n")
             else:
-                self.append_result("   ✅ No security issues detected\n\n")
-            
-            if i < len(all_results) - 1:  # Not last item
-                self.append_result("\n" + "="*60 + "\n\n")
-        
-        # Summary
-        self.append_result("📋 SUMMARY\n")
-        self.append_result("="*20 + "\n")
-        self.append_result(f"Files Analyzed: {len(all_results)}\n")
-        self.append_result(f"Total Packets: {total_packets:,}\n")
-        self.append_result(f"Security Findings: {total_findings}\n")
-        
-        if total_findings > 0:
-            self.append_result("\n⚠️  Review security findings above for potential threats.\n")
-        else:
-            self.append_result("\n✅ No security issues detected across all files.\n")
-        
-        # Store results for saving
-        self.current_results = all_results
+                self.append_result("\n✅ No security issues detected across all files.\n")
+            self.current_results = all_results
+            print("[DIAG] display_results completed successfully")
+        except Exception as e:
+            print(f"[DIAG] Exception in display_results: {e}")
+            traceback.print_exc()
     
     def display_enhanced_results(self, all_results):
         """Display enhanced analysis results with topology context"""
@@ -753,129 +821,90 @@ class EntrySharkApp:
             
             self.append_result(f"📄 File: {filename}\n")
             self.append_result(f"⏰ Analyzed: {results['timestamp']}\n")
-            self.append_result("-" * 40 + "\n")
-            
-            # Basic Statistics
-            self.append_result("📊 STATISTICS:\n")
-            self.append_result(f"   Total Packets: {stats.get('total_packets', 0):,}\n")
-            self.append_result(f"   Unique IPs: {stats.get('unique_ips', 0)}\n")
-            self.append_result(f"   Protocols: {stats.get('protocols', {})}\n")
-            
-            top_ports = stats.get('top_ports', {})
-            if top_ports:
-                self.append_result(f"   Top Ports: {dict(list(top_ports.items())[:5])}\n")
-            self.append_result("\n")
-            
-            # Enhanced Security Findings
-            self.append_result("🔍 AI-ENHANCED SECURITY FINDINGS:\n")
-            if findings:
-                for finding in findings:
-                    severity_icon = "🔴" if finding['severity'] == 'high' else "🟡" if finding['severity'] == 'medium' else "🟢"
-                    self.append_result(f"   {severity_icon} {finding['type'].upper()}: {finding['count']} instances")
-                    
-                    # Add context note if available
-                    if finding.get('context_note'):
-                        self.append_result(f" ({finding['context_note']})")
-                    self.append_result("\n")
-                    
-                    # Show sample data for findings
-                    if 'data' in finding:
-                        if finding['type'] == 'port_scanning':
-                            for scanner in finding['data'][:3]:
-                                self.append_result(f"      • {scanner}\n")
-                        elif finding['type'] == 'suspicious_ports':
-                            ports = [str(item.get('dst_port', 'unknown')) for item in finding['data'][:5]]
-                            self.append_result(f"      • Ports: {', '.join(ports)}\n")
-                
-                self.append_result("\n")
-            else:
-                self.append_result("   ✅ No security issues detected\n\n")
-            
-            # Topology Context
-            if results.get('topology_context'):
-                self.append_result("🌐 NETWORK TOPOLOGY CONTEXT:\n")
-                topology = results['topology_context']
-                
-                if 'network_segments' in topology:
-                    segments = topology['network_segments'][:3]  # Show first 3
-                    for segment in segments:
-                        self.append_result(f"   • {segment.get('name', 'Unknown')}: {segment.get('purpose', 'N/A')}\n")
-                
-                if 'threat_indicators' in topology:
-                    indicators = topology['threat_indicators'][:3]  # Show first 3
-                    for indicator in indicators:
-                        self.append_result(f"   ⚠️  {indicator.get('pattern', 'Unknown')}: {indicator.get('description', 'N/A')}\n")
-                
-                self.append_result("\n")
-            
-            if i < len(all_results) - 1:  # Not last item
-                self.append_result("\n" + "="*60 + "\n\n")
-        
-        # Enhanced Summary
-        self.append_result("📋 AI-ENHANCED SUMMARY\n")
-        self.append_result("="*30 + "\n")
-        self.append_result(f"Files Analyzed: {len(all_results)}\n")
-        self.append_result(f"Total Packets: {total_packets:,}\n")
-        self.append_result(f"Security Findings: {total_findings}\n")
-        self.append_result(f"AI Context: {'Enabled' if self.topology_file else 'Disabled'}\n")
-        
-        if total_findings > 0:
-            self.append_result("\n⚠️  Review AI-enhanced security findings above for contextual threats.\n")
-        else:
-            self.append_result("\n✅ No security issues detected with AI analysis.\n")
-        
-        self.append_result("\n💡 Enhanced analysis complete! Check 'analysis outputs' folder for detailed reports.\n")
-        
-        # Store results for saving
-        self.current_results = all_results
-    
-    def append_result(self, text):
-        """Append text to results area"""
-        self.results_text.config(state=tk.NORMAL)
-        self.results_text.insert(tk.END, text)
-        self.results_text.config(state=tk.DISABLED)
-        self.results_text.see(tk.END)
-    
-    def clear_results(self):
-        """Clear the results area"""
-        self.results_text.config(state=tk.NORMAL)
-        self.results_text.delete(1.0, tk.END)
-        self.results_text.config(state=tk.DISABLED)
-        self.current_results = None
-    
-    def save_report(self):
-        """Save analysis report to file"""
-        if not hasattr(self, 'current_results') or not self.current_results:
-            messagebox.showwarning("No Results", "No analysis results to save")
-            return
-        
-        filename = filedialog.asksaveasfilename(
-            title="Save Analysis Report",
-            defaultextension=".json",
-            filetypes=[
-                ("JSON files", "*.json"),
-                ("Text files", "*.txt"),
-                ("All files", "*.*")
-            ]
-        )
-        
-        if filename:
-            try:
-                if filename.lower().endswith('.json'):
-                    # Save as JSON
-                    with open(filename, 'w') as f:
-                        json.dump(self.current_results, f, indent=2)
-                else:
-                    # Save as text
-                    text_content = self.results_text.get(1.0, tk.END)
-                    with open(filename, 'w') as f:
-                        f.write(text_content)
-                
-                messagebox.showinfo("Report Saved", f"Analysis report saved to:\n{filename}")
-                self.status_var.set(f"Report saved to {os.path.basename(filename)}")
-                
-            except Exception as e:
-                messagebox.showerror("Save Error", f"Failed to save report:\n{str(e)}")
+
+            def display_enhanced_results(self, all_results):
+                """Display enhanced analysis results with topology context (truncated for performance)"""
+                try:
+                    print("[DIAG] Entered display_enhanced_results")
+                    self.clear_results()
+                    total_packets = 0
+                    total_findings = 0
+                    MAX_FINDINGS_DISPLAY = 100
+                    self.append_result("🦈 ENTRYSHARK AI-ENHANCED ANALYSIS RESULTS (Truncated for performance)\n")
+                    self.append_result("="*60 + "\n\n")
+                    if self.topology_file:
+                        self.append_result(f"🤖 AI Topology Analysis: {os.path.basename(self.topology_file)}\n")
+                        self.append_result("🌐 Network context applied to security analysis\n\n")
+                    for i, results in enumerate(all_results):
+                        filename = os.path.basename(results['file'])
+                        stats = results.get('stats', {})
+                        findings = results.get('findings', [])
+                        total_packets += stats.get('total_packets', 0)
+                        total_findings += sum(f.get('count', 0) for f in findings)
+                        self.append_result(f"📄 File: {filename}\n")
+                        self.append_result(f"⏰ Analyzed: {results['timestamp']}\n")
+                        self.append_result("-" * 40 + "\n")
+                        self.append_result("📊 STATISTICS:\n")
+                        self.append_result(f"   Total Packets: {stats.get('total_packets', 0):,}\n")
+                        self.append_result(f"   Unique IPs: {stats.get('unique_ips', 0)}\n")
+                        self.append_result(f"   Protocols: {stats.get('protocols', {})}\n")
+                        top_ports = stats.get('top_ports', {})
+                        if top_ports:
+                            self.append_result(f"   Top Ports: {dict(list(top_ports.items())[:5])}\n")
+                        self.append_result("\n")
+                        self.append_result("🔍 AI-ENHANCED SECURITY FINDINGS (showing first 100 only):\n")
+                        if findings:
+                            for idx, finding in enumerate(findings):
+                                if idx >= MAX_FINDINGS_DISPLAY:
+                                    self.append_result(f"   ... {len(findings) - MAX_FINDINGS_DISPLAY} more findings truncated ...\n")
+                                    break
+                                severity_icon = "🔴" if finding['severity'] == 'high' else "🟡" if finding['severity'] == 'medium' else "🟢"
+                                self.append_result(f"   {severity_icon} {finding['type'].upper()}: {finding['count']} instances")
+                                if finding.get('context_note'):
+                                    self.append_result(f" ({finding['context_note']})")
+                                self.append_result("\n")
+                                if 'data' in finding:
+                                    if finding['type'] == 'port_scanning':
+                                        for scanner in finding['data'][:3]:
+                                            self.append_result(f"      • {scanner}\n")
+                                    elif finding['type'] == 'suspicious_ports':
+                                        ports = [str(item.get('dst_port', 'unknown')) for item in finding['data'][:5]]
+                                        self.append_result(f"      • Ports: {', '.join(ports)}\n")
+                            self.append_result("\n")
+                        else:
+                            self.append_result("   ✅ No security issues detected\n\n")
+                        if results.get('topology_context'):
+                            self.append_result("🌐 NETWORK TOPOLOGY CONTEXT:\n")
+                            topology = results['topology_context']
+                            if 'network_segments' in topology:
+                                segments = topology['network_segments'][:3]
+                                for segment in segments:
+                                    self.append_result(f"   • {segment.get('name', 'Unknown')}: {segment.get('purpose', 'N/A')}\n")
+                            if 'threat_indicators' in topology:
+                                indicators = topology['threat_indicators'][:3]
+                                for indicator in indicators:
+                                    self.append_result(f"   ⚠️  {indicator.get('pattern', 'Unknown')}: {indicator.get('description', 'N/A')}\n")
+                            self.append_result("\n")
+                        if i < len(all_results) - 1:
+                            self.append_result("\n" + "="*60 + "\n\n")
+                    self.append_result("📋 AI-ENHANCED SUMMARY\n")
+                    self.append_result("="*30 + "\n")
+                    self.append_result(f"Files Analyzed: {len(all_results)}\n")
+                    self.append_result(f"Total Packets: {total_packets:,}\n")
+                    self.append_result(f"Security Findings: {total_findings}\n")
+                    self.append_result(f"AI Context: {'Enabled' if self.topology_file else 'Disabled'}\n")
+                    self.append_result("\n⚠️  Only the first 100 findings per file are shown. See the saved report for full details.\n")
+                    if total_findings > 0:
+                        self.append_result("\n⚠️  Review AI-enhanced security findings above for contextual threats.\n")
+                    else:
+                        self.append_result("\n✅ No security issues detected with AI analysis.\n")
+                    self.append_result("\n💡 Enhanced analysis complete! Check 'analysis outputs' folder for detailed reports.\n")
+                    self.current_results = all_results
+                    print("[DIAG] display_enhanced_results completed successfully")
+                except Exception as e:
+                    print(f"[DIAG] Exception in display_enhanced_results: {e}")
+                    traceback.print_exc()
+
 
 def main():
     """Main application entry point"""
