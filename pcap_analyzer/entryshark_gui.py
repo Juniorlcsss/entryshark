@@ -376,13 +376,13 @@ class EntrySharkApp:
                     enhanced_analyzer = MultithreadedPcapAnalyzer(network_context, max_threads=max_threads)
                     enhanced_analyzer.enable_memory_optimization(memory_opt)
 
-                    # Enable ML-based anomaly detection with automatic training
+                    # Enable ML-based anomaly detection with automatic model versioning
                     ml_enabled = enhanced_analyzer.enable_ml_detection(
-                        model_path="auto_trained_network_model.json",
+                        model_path="auto_trained_network_model.json",  # This will be converted to versioned path
                         contamination_rate=0.1
                     )
                     if ml_enabled:
-                        self.result_queue.put(("progress", "🤖 ML-based anomaly detection enabled (will auto-train if needed)"))
+                        self.result_queue.put(("progress", "🤖 ML-based anomaly detection enabled (with model versioning)"))
                     else:
                         self.result_queue.put(("progress", "⚠️  ML detection not available (rustml not installed)"))
                     
