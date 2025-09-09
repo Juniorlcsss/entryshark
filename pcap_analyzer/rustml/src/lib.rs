@@ -244,26 +244,37 @@ fn is_suspicious_port(port: u16) -> PyResult<bool> {
     Ok(suspicious_ports.contains(&port) || port > 40000)
 }
 
-/// Check if an IP address is suspicious
+/// Compute packet statistics from features
 #[pyfunction]
-fn is_suspicious_ip(ip: String) -> PyResult<bool> {
-    // Simple checks for obviously suspicious IPs
-    let suspicious_patterns = vec![
-        "0.0.0.0",
-        "127.0.0.1", 
-        "255.255.255.255",
-        "169.254.", // Link-local addresses
-        "224.", // Multicast
-        "239.", // Multicast
-    ];
+fn compute_packet_statistics(packets: Vec<PacketFeature>) -> PyResult<String> {
+    let mut unique_ips = HashSet::new();
+    let mut protocols = HashMap::new();
+    let mut top_ports = HashMap::new();
     
-    for pattern in suspicious_patterns {
-        if ip.starts_with(pattern) {
-            return Ok(true);
+    for packet in &packets {
+        unique_ips.insert(packet.src_ip.clone());
+        unique_ips.insert(packet.dst_ip.clone());
+        
+        *protocols.entry(packet.protocol.clone()).or_insert(0) += 1;
+        
+        if packet.dst_port > 0 {
+            *top_ports.entry(packet.dst_port).or_insert(0) += 1;
         }
     }
     
-    Ok(false)
+    // Sort top ports
+    let mut top_ports_vec: Vec<(u16, usize)> = top_ports.into_iter().collect();
+    top_ports_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    top_ports_vec.truncate(10);
+    
+    let stats = serde_json::json!({
+        "total_packets": packets.len(),
+        "unique_ips": unique_ips.len(),
+        "protocols": protocols,
+        "top_ports": top_ports_vec
+    });
+    
+    Ok(stats.to_string())
 }
 
 /// Train anomaly detection model using clustering
@@ -637,8 +648,8 @@ fn rustml(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(detect_port_scan, m)?)?;
     m.add_function(wrap_pyfunction!(detect_network_anomalies, m)?)?;
     m.add_function(wrap_pyfunction!(is_suspicious_port, m)?)?;
-    m.add_function(wrap_pyfunction!(is_suspicious_ip, m)?)?;
     m.add_function(wrap_pyfunction!(extract_pcap_features, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_packet_statistics, m)?)?;
     m.add_function(wrap_pyfunction!(train_anomaly_model, m)?)?;
     m.add_function(wrap_pyfunction!(detect_anomalies_with_model, m)?)?;
     m.add_function(wrap_pyfunction!(train_and_detect_anomalies, m)?)?;

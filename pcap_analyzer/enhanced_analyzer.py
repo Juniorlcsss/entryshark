@@ -41,8 +41,8 @@ except ImportError:
 # Import Rust ML functions
 try:
     from rustml import (detect_port_scan, is_suspicious_port, extract_pcap_features,
-                       train_anomaly_model, detect_anomalies_with_model, train_and_detect_anomalies,
-                       PacketFeature)
+                       compute_packet_statistics, train_anomaly_model, detect_anomalies_with_model, 
+                       train_and_detect_anomalies, PacketFeature)
     RUSTML_AVAILABLE = True
 except ImportError:
     RUSTML_AVAILABLE = False
@@ -330,24 +330,31 @@ class EnhancedPcapAnalyzer:
         """Analyze packets with topology context"""
         findings = []
         
-        # Basic statistics
-        stats = {
-            'total_packets': len(packets_data),
-            'unique_ips': len(set([p['src_ip'] for p in packets_data] + [p['dst_ip'] for p in packets_data])),
-            'protocols': {},
-            'top_ports': {}
-        }
-        
-        # Count protocols and ports
-        for packet in packets_data:
-            protocol = packet['protocol']
-            stats['protocols'][protocol] = stats['protocols'].get(protocol, 0) + 1
-            
-            if packet['dst_port'] > 0:
-                stats['top_ports'][packet['dst_port']] = stats['top_ports'].get(packet['dst_port'], 0) + 1
-        
-        # Sort top ports
-        stats['top_ports'] = dict(sorted(stats['top_ports'].items(), key=lambda x: x[1], reverse=True)[:10])
+        # Basic statistics - now computed in Rust for better performance
+        if RUSTML_AVAILABLE:
+            try:
+                # Convert packets_data to PacketFeature objects for Rust
+                packet_features = []
+                for packet in packets_data:
+                    feature = PacketFeature()
+                    feature.src_ip = str(packet.get('src_ip', ''))
+                    feature.dst_ip = str(packet.get('dst_ip', ''))
+                    feature.src_port = int(packet.get('src_port', 0))
+                    feature.dst_port = int(packet.get('dst_port', 0))
+                    feature.protocol = str(packet.get('protocol', 'unknown'))
+                    feature.packet_size = int(packet.get('packet_size', packet.get('length', 0)))
+                    feature.timestamp = float(packet.get('timestamp', packet.get('time', 0.0)))
+                    packet_features.append(feature)
+                
+                # Compute statistics in Rust
+                stats_json = compute_packet_statistics(packet_features)
+                stats = json.loads(stats_json)
+                
+            except Exception as e:
+                print(f"⚠️  Error computing statistics in Rust: {str(e)}, falling back to Python")
+                stats = self._compute_stats_python(packets_data)
+        else:
+            stats = self._compute_stats_python(packets_data)
         
         # Enhanced Security Analysis
         print(f"🔍 Running comprehensive threat analysis on {len(packets_data)} packets...")
@@ -432,6 +439,28 @@ class EnhancedPcapAnalyzer:
             'findings': findings,
             'topology_context': self.topology_context
         }
+    
+    def _compute_stats_python(self, packets_data):
+        """Fallback statistics computation in Python"""
+        stats = {
+            'total_packets': len(packets_data),
+            'unique_ips': len(set([p['src_ip'] for p in packets_data] + [p['dst_ip'] for p in packets_data])),
+            'protocols': {},
+            'top_ports': {}
+        }
+        
+        # Count protocols and ports
+        for packet in packets_data:
+            protocol = packet['protocol']
+            stats['protocols'][protocol] = stats['protocols'].get(protocol, 0) + 1
+            
+            if packet['dst_port'] > 0:
+                stats['top_ports'][packet['dst_port']] = stats['top_ports'].get(packet['dst_port'], 0) + 1
+        
+        # Sort top ports
+        stats['top_ports'] = dict(sorted(stats['top_ports'].items(), key=lambda x: x[1], reverse=True)[:10])
+        
+        return stats
     
     def _detect_port_scanning(self, packets_data):
         """Enhanced port scanning detection"""

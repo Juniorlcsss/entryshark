@@ -754,9 +754,16 @@ class EntrySharkApp:
                 self.append_result(f"   Total Packets: {stats.get('total_packets', 0):,}\n")
                 self.append_result(f"   Unique IPs: {stats.get('unique_ips', 0)}\n")
                 self.append_result(f"   Protocols: {stats.get('protocols', {})}\n")
-                top_ports = stats.get('top_ports', {})
+                top_ports = stats.get('top_ports', [])
                 if top_ports:
-                    self.append_result(f"   Top Ports: {dict(list(top_ports.items())[:5])}\n")
+                    # Handle both dict and list formats from Rust function
+                    if isinstance(top_ports, list):
+                        # Convert list of [port, count] to dict for display
+                        port_dict = {port: count for port, count in top_ports[:5]}
+                        self.append_result(f"   Top Ports: {port_dict}\n")
+                    else:
+                        # Handle dict format (legacy)
+                        self.append_result(f"   Top Ports: {dict(list(top_ports.items())[:5])}\n")
                 self.append_result("\n")
                 self.append_result("🔍 SECURITY FINDINGS (showing first 100 only):\n")
                 if findings:
