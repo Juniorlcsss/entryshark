@@ -29,21 +29,25 @@ pip install -r requirements.txt
 
 ### Running EntryShark
 
-#### Option 1: Desktop GUI Application (Recommended)
+#### Option 1: Desktop GUI Application
 
 ```bash
 cd pcap_analyzer
 python entryshark_gui.py
 ```
 
-#### Option 2: Command Line Analysis
+#### Option 2: Visit the website
+
+https://entryshark-web.onrender.com/
+
+#### Option 3: Command Line Analysis
 
 ```bash
 cd pcap_analyzer
 python enhanced_analyzer.py your_network_topology.png your_capture.pcap
 ```
 
-#### Option 3: Simple Analysis (No AI Vision)
+#### Option 4: Simple Analysis (No AI Vision)
 
 ```bash
 cd pcap_analyzer
@@ -84,29 +88,9 @@ EntryShark generates multiple output formats:
 - **Text Report**: Human-readable executive summary with recommendations
 - **Console Output**: Real-time analysis progress and summary
 
-## 🛠️ Features
-
-- **AI-Powered Analysis**: Uses Mistral Pixtral for network topology understanding
-- **Advanced Threat Detection**: Detects port scans, lateral movement, data exfiltration, and more
-- **RustML Backend**: High-performance machine learning threat detection
-- **False Positive Reduction**: Intelligent filtering and confidence scoring
-- **Professional Reporting**: Executive summaries with actionable insights
-- **Multi-Format Output**: JSON, CSV, and readable text reports
-
 ## 📋 Requirements
 
-- Python 3.8+
 - Network capture files (PCAP format)
 - Optional: Network topology diagrams for enhanced analysis
 - Optional: Mistral API key for AI vision features (set in `.env` file)
 
-## 🔧 Troubleshooting
-
-**Issue**: Missing dependencies
-**Solution**: Run `pip install -r pcap_analyzer/requirements.txt`
-
-**Issue**: GUI doesn't start
-**Solution**: Ensure tkinter is installed: `pip install tkinter`
-
-**Issue**: PCAP files not loading
-**Solution**: Verify files are valid PCAP format and not corrupted
